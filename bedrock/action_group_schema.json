@@ -1,0 +1,63 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "IaC Generator API",
+    "version": "1.0.0",
+    "description": "API for generating Infrastructure as Code"
+  },
+  "paths": {
+    "/generate-iac": {
+      "post": {
+        "summary": "Generate Infrastructure as Code",
+        "description": "Generates validated and security-scanned IaC from natural language description",
+        "operationId": "generateIaC",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "user_request": {
+                    "type": "string",
+                    "description": "Natural language description of the infrastructure to create"
+                  },
+                  "iac_type": {
+                    "type": "string",
+                    "description": "Type of IaC to generate (terraform, cloudformation, or cdk)",
+                    "enum": ["terraform", "cloudformation", "cdk"],
+                    "default": "terraform"
+                  }
+                },
+                "required": ["user_request"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "IaC generation pipeline started successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "execution_arn": {
+                      "type": "string"
+                    },
+                    "iac_type": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
