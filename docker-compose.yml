@@ -1,0 +1,18 @@
+services:
+  iac-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    container_name: iac-agent-dev
+    platform: linux/amd64
+    volumes:
+      - ~/.aws:/root/.aws:rw
+      - .:/app
+    environment:
+      - AWS_PROFILE=${AWS_PROFILE:-default}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+    working_dir: /app
+    stdin_open: true
+    tty: true

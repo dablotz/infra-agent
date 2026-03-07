@@ -15,6 +15,11 @@ A Bedrock-powered agent that translates natural language into validated, securit
 
 ## Prerequisites
 
+### Docker Setup (Recommended)
+1. Docker and Docker Compose
+2. AWS CLI configured with appropriate credentials
+
+### Local Setup
 1. AWS CLI configured with appropriate credentials
 2. Terraform >= 1.0
 3. Access to Amazon Bedrock (Claude 3.5 Sonnet model)
@@ -32,6 +37,17 @@ A Bedrock-powered agent that translates natural language into validated, securit
 ```
 
 ## Setup
+
+### Docker (Recommended)
+
+```bash
+# Build and run container
+docker-compose up -d
+docker-compose exec iac-agent bash
+
+# Inside container
+make all
+```
 
 ### Local Development Environment
 

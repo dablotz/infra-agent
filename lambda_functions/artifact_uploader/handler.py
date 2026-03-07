@@ -2,6 +2,7 @@ import json
 import boto3
 import os
 from datetime import datetime
+import uuid
 
 s3 = boto3.client("s3")
 
@@ -12,15 +13,17 @@ def lambda_handler(event, context):
     user_request = event.get("user_request", "")
 
     bucket = os.environ["OUTPUT_BUCKET"]
+    request_id = str(uuid.uuid4())
     timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     file_ext = ".tf" if iac_type == "terraform" else ".yaml"
-    key = f"generated/{timestamp}{file_ext}"
+    key = f"generated/{request_id}/{timestamp}{file_ext}"
 
     metadata = {
         "user-request": user_request[:1024],
         "iac-type": iac_type,
         "validation-status": event.get("validation_status", "unknown"),
         "security-status": event.get("security_status", "unknown"),
+        "request-id": request_id,
     }
 
     s3.put_object(
@@ -31,7 +34,7 @@ def lambda_handler(event, context):
         Metadata=metadata,
     )
 
-    metadata_key = f"generated/{timestamp}-metadata.json"
+    metadata_key = f"generated/{request_id}/{timestamp}-metadata.json"
     s3.put_object(
         Bucket=bucket,
         Key=metadata_key,
@@ -41,6 +44,7 @@ def lambda_handler(event, context):
 
     return {
         **event,
+        "request_id": request_id,
         "s3_bucket": bucket,
         "s3_key": key,
         "s3_metadata_key": metadata_key,

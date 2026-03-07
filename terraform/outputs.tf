@@ -8,9 +8,24 @@ output "agent_arn" {
   value       = aws_bedrockagent_agent.iac_agent.agent_arn
 }
 
+output "guardrail_id" {
+  description = "Bedrock Guardrail ID"
+  value       = aws_bedrock_guardrail.iac_agent.guardrail_id
+}
+
+output "guardrail_arn" {
+  description = "Bedrock Guardrail ARN"
+  value       = aws_bedrock_guardrail.iac_agent.guardrail_arn
+}
+
 output "output_bucket" {
   description = "S3 bucket for generated IaC artifacts"
   value       = aws_s3_bucket.iac_output.id
+}
+
+output "lambda_layers_bucket" {
+  description = "S3 bucket for Lambda layers"
+  value       = aws_s3_bucket.lambda_layers.id
 }
 
 output "state_machine_arn" {

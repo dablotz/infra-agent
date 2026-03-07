@@ -1,10 +1,12 @@
-.PHONY: all clean package-lambdas build-layers deploy prepare-agent create-alias destroy help install-hooks validate setup
+.PHONY: all clean package-lambdas build-layers deploy prepare-agent create-alias destroy help install-hooks validate setup docker-build docker-run
 
 TERRAFORM_VERSION := 1.6.0
 TFLINT_VERSION := 0.48.0
 
 help:
 	@echo "Available targets:"
+	@echo "  docker-build     - Build Docker container"
+	@echo "  docker-run       - Run Docker container"
 	@echo "  setup            - Set up local development environment"
 	@echo "  all              - Build everything and deploy"
 	@echo "  install-hooks    - Install pre-commit hooks"
@@ -16,6 +18,15 @@ help:
 	@echo "  create-alias     - Create production alias (requires AGENT_ID)"
 	@echo "  destroy          - Destroy all infrastructure"
 	@echo "  clean            - Remove generated files"
+
+docker-build:
+	@echo "Building Docker container..."
+	@docker-compose build
+
+docker-run:
+	@echo "Starting Docker container..."
+	@docker-compose up -d
+	@docker-compose exec iac-agent bash
 
 setup:
 	@chmod +x scripts/setup_dev.sh
@@ -56,7 +67,9 @@ build-terraform-layer:
 build-security-layer:
 	@echo "Building security tools layer..."
 	@mkdir -p lambda_layers/security_tools/python
-	@pip install -q checkov -t lambda_layers/security_tools/python/
+	@pip install -q --no-cache-dir --platform manylinux2014_x86_64 --only-binary=:all: checkov -t lambda_layers/security_tools/python/
+	@find lambda_layers/security_tools -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	@find lambda_layers/security_tools -type f -name "*.pyc" -delete
 	@cd lambda_layers/security_tools && zip -qr ../security_tools.zip .
 	@echo "Security tools layer built"
 
@@ -87,6 +100,16 @@ create-alias:
 
 destroy:
 	@echo "Destroying infrastructure..."
+	@if [ -n "$$(cd terraform && terraform output -raw agent_id 2>/dev/null)" ]; then \
+		echo "Disabling agent action groups before destroy..."; \
+		AGENT_ID=$$(cd terraform && terraform output -raw agent_id); \
+		aws bedrock-agent update-agent-action-group \
+			--agent-id $$AGENT_ID \
+			--agent-version DRAFT \
+			--action-group-id $$(aws bedrock-agent list-agent-action-groups --agent-id $$AGENT_ID --agent-version DRAFT --query 'actionGroupSummaries[0].actionGroupId' --output text) \
+			--action-group-state DISABLED 2>/dev/null || true; \
+		sleep 5; \
+	fi
 	@cd terraform && terraform destroy -auto-approve
 
 clean:

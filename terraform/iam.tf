@@ -30,9 +30,44 @@ resource "aws_iam_role_policy" "bedrock_agent" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "AllowModelAndInferenceProfileAccess"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ListInferenceProfiles",
+          "bedrock:GetInferenceProfile"
+        ]
+        Resource = [
+          "arn:aws:bedrock:*:*:inference-profile/*",
+          "arn:aws:bedrock:*:*:inference-profile/us.*",
+          "arn:aws:bedrock:*::inference-profile/*",
+          "arn:aws:bedrock:*:*:application-inference-profile/*",
+          "arn:aws:bedrock:*:*:application-inference-profile/us.*",
+          "arn:aws:bedrock:*::application-inference-profile/*",
+          "arn:aws:bedrock:*:*:foundation-model/*",
+          "arn:aws:bedrock:*:*:foundation-model/us.*",
+          "arn:aws:bedrock:*::foundation-model/*"
+        ]
+      },
+      {
+        "Sid" : "AllowMarketplaceSubscription",
+        "Effect" : "Allow",
+        "Action" : [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe"
+        ],
+        "Resource" : "*",
+        "Condition" : {
+          "StringEquals" : {
+            "aws:CalledViaLast" : "bedrock.amazonaws.com"
+          }
+        }
+      },
+      {
         Effect   = "Allow"
-        Action   = "bedrock:InvokeModel"
-        Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/${var.bedrock_model_id}"
+        Action   = "bedrock:ApplyGuardrail"
+        Resource = aws_bedrock_guardrail.iac_agent.guardrail_arn
       }
     ]
   })
@@ -62,9 +97,12 @@ resource "aws_iam_role_policy" "lambda_generator" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = "bedrock:InvokeModel"
-        Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/${var.bedrock_model_id}"
+        Effect = "Allow"
+        Action = "bedrock:InvokeModel"
+        Resource = [
+          "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:*:inference-profile/*"
+        ]
       },
       {
         Effect = "Allow"
@@ -259,6 +297,7 @@ resource "aws_iam_role_policy" "step_functions" {
         Action = "lambda:InvokeFunction"
         Resource = [
           aws_lambda_function.code_generator.arn,
+          aws_lambda_function.code_regenerator.arn,
           aws_lambda_function.validator.arn,
           aws_lambda_function.security_scanner.arn,
           aws_lambda_function.artifact_uploader.arn

@@ -13,5 +13,5 @@ variable "project_name" {
 variable "bedrock_model_id" {
   description = "Bedrock model ID for code generation"
   type        = string
-  default     = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+  default     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 }

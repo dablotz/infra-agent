@@ -7,6 +7,8 @@
 # Lambda packages
 lambda_functions/*.zip
 lambda_layers/*.zip
+lambda_layers/terraform_tools/
+lambda_layers/security_tools/
 
 # Python
 __pycache__/
