@@ -1,0 +1,6 @@
+{
+  "user_request": "Create an S3 bucket with versioning enabled",
+  "iac_type": "terraform",
+  "generated_code": "terraform {\n  required_providers {\n    aws = {\n      source  = \"hashicorp/aws\"\n      version = \"~> 5.0\"\n    }\n  }\n}\n\nresource \"aws_s3_bucket\" \"example\" {\n  bucket = \"my-example-bucket\"\n}\n",
+  "retry_count": 0
+}

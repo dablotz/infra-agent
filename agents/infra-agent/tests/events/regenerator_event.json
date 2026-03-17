@@ -1,0 +1,8 @@
+{
+  "user_request": "Create an S3 bucket with versioning enabled",
+  "iac_type": "terraform",
+  "validation_errors": [
+    "Terraform validate failed: Error: Missing required argument\n\n  on main.tf line 5, in resource \"aws_s3_bucket\" \"example\":\n   5:   bucket = var.bucket_name\n\nThe argument \"bucket\" is required, but no definition was found."
+  ],
+  "retry_count": 1
+}

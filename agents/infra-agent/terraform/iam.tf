@@ -15,7 +15,7 @@ resource "aws_iam_role" "bedrock_agent" {
           "aws:SourceAccount" = data.aws_caller_identity.current.account_id
         }
         ArnLike = {
-          "aws:SourceArn" = "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent/*"
+          "aws:SourceArn" = "arn:aws:bedrock:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:agent/*"
         }
       }
     }]
@@ -39,23 +39,17 @@ resource "aws_iam_role_policy" "bedrock_agent" {
           "bedrock:GetInferenceProfile"
         ]
         Resource = [
-          "arn:aws:bedrock:*:*:inference-profile/*",
-          "arn:aws:bedrock:*:*:inference-profile/us.*",
-          "arn:aws:bedrock:*::inference-profile/*",
-          "arn:aws:bedrock:*:*:application-inference-profile/*",
-          "arn:aws:bedrock:*:*:application-inference-profile/us.*",
-          "arn:aws:bedrock:*::application-inference-profile/*",
-          "arn:aws:bedrock:*:*:foundation-model/*",
-          "arn:aws:bedrock:*:*:foundation-model/us.*",
-          "arn:aws:bedrock:*::foundation-model/*"
+          "arn:aws:bedrock:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_model_id}",
+          "arn:aws:bedrock:us-east-1::foundation-model/${local.bedrock_base_model_id}",
+          "arn:aws:bedrock:us-west-2::foundation-model/${local.bedrock_base_model_id}",
+          "arn:aws:bedrock:us-east-2::foundation-model/${local.bedrock_base_model_id}"
         ]
       },
       {
         "Sid" : "AllowMarketplaceSubscription",
         "Effect" : "Allow",
         "Action" : [
-          "aws-marketplace:ViewSubscriptions",
-          "aws-marketplace:Subscribe"
+          "aws-marketplace:ViewSubscriptions"
         ],
         "Resource" : "*",
         "Condition" : {
@@ -100,8 +94,10 @@ resource "aws_iam_role_policy" "lambda_generator" {
         Effect = "Allow"
         Action = "bedrock:InvokeModel"
         Resource = [
-          "arn:aws:bedrock:*::foundation-model/*",
-          "arn:aws:bedrock:*:*:inference-profile/*"
+          "arn:aws:bedrock:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_model_id}",
+          "arn:aws:bedrock:us-east-1::foundation-model/${local.bedrock_base_model_id}",
+          "arn:aws:bedrock:us-west-2::foundation-model/${local.bedrock_base_model_id}",
+          "arn:aws:bedrock:us-east-2::foundation-model/${local.bedrock_base_model_id}"
         ]
       },
       {
@@ -212,8 +208,7 @@ resource "aws_iam_role_policy" "lambda_uploader" {
       {
         Effect = "Allow"
         Action = [
-          "s3:PutObject",
-          "s3:GetObject"
+          "s3:PutObject"
         ]
         Resource = "${aws_s3_bucket.iac_output.arn}/*"
       },
@@ -258,6 +253,11 @@ resource "aws_iam_role_policy" "lambda_action_group" {
         Resource = aws_sfn_state_machine.iac_generator.arn
       },
       {
+        Effect   = "Allow"
+        Action   = "states:DescribeExecution"
+        Resource = "arn:aws:states:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:execution:${var.project_name}-iac-generator:*"
+      },
+      {
         Effect = "Allow"
         Action = [
           "logs:CreateLogStream",
@@ -297,13 +297,13 @@ resource "aws_iam_role_policy" "step_functions" {
         Action = "lambda:InvokeFunction"
         Resource = [
           aws_lambda_function.code_generator.arn,
-          aws_lambda_function.code_regenerator.arn,
           aws_lambda_function.validator.arn,
           aws_lambda_function.security_scanner.arn,
           aws_lambda_function.artifact_uploader.arn
         ]
       },
       {
+        # Log delivery management actions do not support resource-level restrictions (AWS IAM limitation)
         Effect = "Allow"
         Action = [
           "logs:CreateLogDelivery",
@@ -312,10 +312,14 @@ resource "aws_iam_role_policy" "step_functions" {
           "logs:DeleteLogDelivery",
           "logs:ListLogDeliveries",
           "logs:PutResourcePolicy",
-          "logs:DescribeResourcePolicies",
-          "logs:DescribeLogGroups"
+          "logs:DescribeResourcePolicies"
         ]
         Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "logs:DescribeLogGroups"
+        Resource = "${aws_cloudwatch_log_group.step_functions.arn}:*"
       }
     ]
   })

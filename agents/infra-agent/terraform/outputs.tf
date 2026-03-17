@@ -23,11 +23,6 @@ output "output_bucket" {
   value       = aws_s3_bucket.iac_output.id
 }
 
-output "lambda_layers_bucket" {
-  description = "S3 bucket for Lambda layers"
-  value       = aws_s3_bucket.lambda_layers.id
-}
-
 output "state_machine_arn" {
   description = "Step Functions state machine ARN"
   value       = aws_sfn_state_machine.iac_generator.arn

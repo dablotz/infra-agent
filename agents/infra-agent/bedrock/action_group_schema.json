@@ -9,7 +9,7 @@
     "/generate-iac": {
       "post": {
         "summary": "Generate Infrastructure as Code",
-        "description": "Generates validated and security-scanned IaC from natural language description",
+        "description": "Generates validated and security-scanned IaC from natural language description. Runs the full pipeline synchronously and returns the S3 location of the generated artifact.",
         "operationId": "generateIaC",
         "requestBody": {
           "required": true,
@@ -36,7 +36,7 @@
         },
         "responses": {
           "200": {
-            "description": "IaC generation pipeline started successfully",
+            "description": "IaC generated, validated, and security-scanned successfully",
             "content": {
               "application/json": {
                 "schema": {
@@ -45,12 +45,51 @@
                     "message": {
                       "type": "string"
                     },
-                    "execution_arn": {
+                    "s3_uri": {
+                      "type": "string",
+                      "description": "S3 URI where the generated IaC artifact can be retrieved"
+                    },
+                    "s3_bucket": {
+                      "type": "string"
+                    },
+                    "s3_key": {
                       "type": "string"
                     },
                     "iac_type": {
                       "type": "string"
+                    },
+                    "validation_status": {
+                      "type": "string"
+                    },
+                    "security_status": {
+                      "type": "string"
                     }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Pipeline execution failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string" }
                   }
                 }
               }

@@ -8,11 +8,11 @@ services:
     container_name: iac-agent-dev
     platform: linux/amd64
     volumes:
-      - ~/.aws:/root/.aws:rw
-      - .:/app
+      - ~/.aws:/root/.aws:ro
+      - .:/workspace
     environment:
       - AWS_PROFILE=${AWS_PROFILE:-default}
       - AWS_REGION=${AWS_REGION:-us-east-1}
-    working_dir: /app
+    working_dir: /workspace
     stdin_open: true
     tty: true

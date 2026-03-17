@@ -1,0 +1,4 @@
+{
+  "user_request": "Create an S3 bucket with versioning enabled",
+  "iac_type": "terraform"
+}

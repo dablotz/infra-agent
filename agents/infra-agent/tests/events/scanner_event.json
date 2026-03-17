@@ -1,0 +1,8 @@
+{
+  "user_request": "Create an S3 bucket with versioning enabled",
+  "iac_type": "terraform",
+  "generated_code": "resource \"aws_s3_bucket\" \"example\" {\n  bucket = \"my-example-bucket\"\n}\n",
+  "validation_status": "passed",
+  "validation_errors": [],
+  "retry_count": 0
+}

@@ -1,0 +1,19 @@
+{
+  "actionGroup": "IaCGeneratorActionGroup",
+  "apiPath": "/generate-iac",
+  "httpMethod": "POST",
+  "parameters": [
+    {
+      "name": "user_request",
+      "type": "string",
+      "value": "Create an S3 bucket with versioning enabled"
+    },
+    {
+      "name": "iac_type",
+      "type": "string",
+      "value": "terraform"
+    }
+  ],
+  "sessionAttributes": {},
+  "promptSessionAttributes": {}
+}

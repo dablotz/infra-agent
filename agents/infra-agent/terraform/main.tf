@@ -1,9 +1,9 @@
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.14"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 6.28, < 7.0"
     }
   }
 }
@@ -15,10 +15,25 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
+locals {
+  # Strip the cross-region prefix (e.g. "us.", "eu.", "ap.") from the model ID
+  # to get the base foundation model ID used in regional ARNs.
+  # e.g. "us.anthropic.claude-sonnet-4-5-20250929-v1:0" → "anthropic.claude-sonnet-4-5-20250929-v1:0"
+  bedrock_base_model_id = replace(var.bedrock_model_id, "/^[a-z]{2}\\./", "")
+}
+
 # S3 Bucket for generated IaC artifacts
 resource "aws_s3_bucket" "iac_output" {
   bucket        = "${var.project_name}-iac-output-${data.aws_caller_identity.current.account_id}"
   force_destroy = true
+}
+
+resource "aws_s3_bucket_public_access_block" "iac_output" {
+  bucket                  = aws_s3_bucket.iac_output.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
 resource "aws_s3_bucket_versioning" "iac_output" {
@@ -37,30 +52,30 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "iac_output" {
   }
 }
 
+# S3 Event notification to EventBridge when code is uploaded
+resource "aws_s3_bucket_notification" "iac_output" {
+  bucket      = aws_s3_bucket.iac_output.id
+  eventbridge = true
+}
+
 # Lambda Layer for Terraform and tflint binaries
 resource "aws_lambda_layer_version" "terraform_tools" {
-  filename            = "${path.module}/../lambda_layers/terraform_tools.zip"
+  filename            = "${path.module}/../../../shared/lambda_layers/terraform_tools.zip"
   layer_name          = "${var.project_name}-terraform-tools"
   compatible_runtimes = ["python3.12"]
   description         = "Terraform and tflint binaries for validation"
 }
 
-# S3 bucket for Lambda layers
-resource "aws_s3_bucket" "lambda_layers" {
-  bucket        = "${var.project_name}-lambda-layers-${data.aws_caller_identity.current.account_id}"
-  force_destroy = true
-}
-
+# Lambda Layer for security scanning tools (from shared S3)
 resource "aws_s3_object" "security_tools_layer" {
-  bucket = aws_s3_bucket.lambda_layers.id
-  key    = "security_tools.zip"
-  source = "${path.module}/../lambda_layers/security_tools.zip"
-  etag   = filemd5("${path.module}/../lambda_layers/security_tools.zip")
+  bucket = var.lambda_layers_bucket
+  key    = "infra-agent/security_tools.zip"
+  source = "${path.module}/../../../shared/lambda_layers/security_tools.zip"
+  etag   = filemd5("${path.module}/../../../shared/lambda_layers/security_tools.zip")
 }
 
-# Lambda Layer for security scanning tools (from S3)
 resource "aws_lambda_layer_version" "security_tools" {
-  s3_bucket           = aws_s3_bucket.lambda_layers.id
+  s3_bucket           = var.lambda_layers_bucket
   s3_key              = aws_s3_object.security_tools_layer.key
   layer_name          = "${var.project_name}-security-tools"
   compatible_runtimes = ["python3.12"]
@@ -77,24 +92,6 @@ resource "aws_lambda_function" "code_generator" {
   timeout          = 300
   memory_size      = 512
   source_code_hash = filebase64sha256("${path.module}/../lambda_functions/code_generator.zip")
-
-  environment {
-    variables = {
-      BEDROCK_MODEL_ID = var.bedrock_model_id
-    }
-  }
-}
-
-# Lambda: Code Regenerator (with validation feedback)
-resource "aws_lambda_function" "code_regenerator" {
-  filename         = "${path.module}/../lambda_functions/code_regenerator.zip"
-  function_name    = "${var.project_name}-code-regenerator"
-  role             = aws_iam_role.lambda_generator.arn
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  timeout          = 300
-  memory_size      = 512
-  source_code_hash = filebase64sha256("${path.module}/../lambda_functions/code_regenerator.zip")
 
   environment {
     variables = {
@@ -205,6 +202,7 @@ resource "aws_sfn_state_machine" "iac_generator" {
         Parameters = {
           "user_request.$"      = "$.user_request"
           "iac_type.$"          = "$.iac_type"
+          "generated_code.$"    = "$.generated_code"
           "validation_errors.$" = "$.validation_errors"
           "retry_count.$"       = "States.MathAdd($.retry_count, 1)"
         }
@@ -212,7 +210,7 @@ resource "aws_sfn_state_machine" "iac_generator" {
       }
       RegenerateCode = {
         Type     = "Task"
-        Resource = aws_lambda_function.code_regenerator.arn
+        Resource = aws_lambda_function.code_generator.arn
         Next     = "ValidateCode"
         Catch = [{
           ErrorEquals = ["States.ALL"]
@@ -281,7 +279,7 @@ resource "aws_lambda_function" "action_group_handler" {
   role             = aws_iam_role.lambda_action_group.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
-  timeout          = 60
+  timeout          = 600
   memory_size      = 256
   source_code_hash = filebase64sha256("${path.module}/../lambda_functions/action_group_handler.zip")
 
@@ -303,30 +301,30 @@ resource "aws_lambda_permission" "bedrock_invoke" {
 # CloudWatch Log Groups
 resource "aws_cloudwatch_log_group" "step_functions" {
   name              = "/aws/stepfunctions/${var.project_name}-iac-generator"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "lambda_generator" {
   name              = "/aws/lambda/${var.project_name}-code-generator"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "lambda_validator" {
   name              = "/aws/lambda/${var.project_name}-validator"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "lambda_scanner" {
   name              = "/aws/lambda/${var.project_name}-security-scanner"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "lambda_uploader" {
   name              = "/aws/lambda/${var.project_name}-artifact-uploader"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "lambda_action_group" {
   name              = "/aws/lambda/${var.project_name}-action-group-handler"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }

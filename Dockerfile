@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-WORKDIR /app
+WORKDIR /workspace
 
 RUN apt-get update && apt-get install -y \
     wget \
@@ -22,7 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-ARG TERRAFORM_VERSION=1.6.0
+ARG TERRAFORM_VERSION=1.14.0
 ARG TFLINT_VERSION=0.48.0
 
 RUN wget -q https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip && \
@@ -37,9 +37,13 @@ RUN wget -q https://github.com/terraform-linters/tflint/releases/download/v${TFL
 
 COPY . .
 
-RUN chmod +x scripts/*.sh docker-entrypoint.sh
+RUN chmod +x shared/scripts/*.sh docker-entrypoint.sh 2>/dev/null || true
 
 ENV AWS_DEFAULT_REGION=us-east-1
 
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+RUN groupadd -r buildgroup && useradd -r -g buildgroup builder && \
+    chown -R builder:buildgroup /workspace
+USER builder
+
+ENTRYPOINT ["/workspace/docker-entrypoint.sh"]
 CMD ["/bin/bash"]
