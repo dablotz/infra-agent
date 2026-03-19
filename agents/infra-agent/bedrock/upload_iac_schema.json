@@ -1,0 +1,78 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Upload IaC API",
+    "version": "1.0.0",
+    "description": "Upload a generated IaC artifact to S3"
+  },
+  "paths": {
+    "/upload-iac": {
+      "post": {
+        "summary": "Upload IaC artifact to S3",
+        "description": "Stores the generated code in S3 along with pipeline metadata. Returns the S3 URI to provide to the user.",
+        "operationId": "uploadIaC",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["generated_code"],
+                "properties": {
+                  "generated_code": {
+                    "type": "string",
+                    "description": "The IaC code to upload"
+                  },
+                  "iac_type": {
+                    "type": "string",
+                    "description": "Type of IaC code",
+                    "enum": ["terraform", "cloudformation", "cdk"],
+                    "default": "terraform"
+                  },
+                  "user_request": {
+                    "type": "string",
+                    "description": "Original user request, stored as S3 object metadata"
+                  },
+                  "validation_status": {
+                    "type": "string",
+                    "description": "Validation outcome to record in metadata"
+                  },
+                  "security_status": {
+                    "type": "string",
+                    "description": "Security scan outcome to record in metadata"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Artifact uploaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "s3_uri": { "type": "string" },
+                    "s3_key": { "type": "string" },
+                    "s3_bucket": { "type": "string" },
+                    "request_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "error": { "type": "string" } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

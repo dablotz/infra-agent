@@ -11,15 +11,50 @@ TERRAFORM_BIN = "/opt/bin/terraform"
 TFLINT_BIN = "/opt/bin/tflint"
 
 
+def _get_props(event):
+    return (event.get("requestBody", {})
+            .get("content", {})
+            .get("application/json", {})
+            .get("properties", []))
+
+
+def _prop(props, name, default=""):
+    return next((p["value"] for p in props if p["name"] == name), default)
+
+
+def _response(event, status_code, body_dict):
+    return {
+        "messageVersion": "1.0",
+        "response": {
+            "actionGroup": event.get("actionGroup", ""),
+            "apiPath": event.get("apiPath", ""),
+            "httpMethod": event.get("httpMethod", "POST"),
+            "httpStatusCode": status_code,
+            "responseBody": {
+                "application/json": {
+                    "body": json.dumps(body_dict)
+                }
+            }
+        }
+    }
+
+
 def lambda_handler(event, context):
-    generated_code = event.get("generated_code", "")
-    iac_type = event.get("iac_type", "terraform")
+    props = _get_props(event)
+    generated_code = _prop(props, "generated_code")
+    iac_type = _prop(props, "iac_type", "terraform")
+
+    if not generated_code:
+        return _response(event, 400, {"error": "generated_code is required"})
 
     logger.info(json.dumps({"message": "validation_started", "iac_type": iac_type}))
 
     if iac_type != "terraform":
         logger.info(json.dumps({"message": "validation_skipped", "iac_type": iac_type}))
-        return {**event, "validation_status": "skipped", "validation_errors": []}
+        return _response(event, 200, {
+            "validation_status": "skipped",
+            "validation_errors": "",
+        })
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tf_file = os.path.join(tmpdir, "main.tf")
@@ -43,7 +78,10 @@ def lambda_handler(event, context):
         except subprocess.CalledProcessError as e:
             errors.append(f"Terraform init failed: {e.stderr.decode()}")
             logger.warning(json.dumps({"message": "terraform_init_failed"}))
-            return {**event, "validation_status": "failed", "validation_errors": errors}
+            return _response(event, 200, {
+                "validation_status": "failed",
+                "validation_errors": "\n".join(errors),
+            })
 
         try:
             subprocess.run(
@@ -86,4 +124,7 @@ def lambda_handler(event, context):
             "status": status,
             "error_count": len(errors),
         }))
-        return {**event, "validation_status": status, "validation_errors": errors}
+        return _response(event, 200, {
+            "validation_status": status,
+            "validation_errors": "\n".join(errors),
+        })

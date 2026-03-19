@@ -41,7 +41,7 @@ RUN chmod +x shared/scripts/*.sh docker-entrypoint.sh 2>/dev/null || true
 
 ENV AWS_DEFAULT_REGION=us-east-1
 
-RUN groupadd -r buildgroup && useradd -r -g buildgroup builder && \
+RUN groupadd -r buildgroup && useradd -r -m -g buildgroup builder && \
     chown -R builder:buildgroup /workspace
 USER builder
 

@@ -1,0 +1,73 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Generate IaC API",
+    "version": "1.0.0",
+    "description": "Generate Infrastructure as Code from a natural language description"
+  },
+  "paths": {
+    "/generate-iac": {
+      "post": {
+        "summary": "Generate IaC code",
+        "description": "Calls an LLM to generate Terraform, CloudFormation, or CDK code from a natural language description. For regeneration after validation failure, pass validation_errors and previous_code.",
+        "operationId": "generateIaC",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["user_request"],
+                "properties": {
+                  "user_request": {
+                    "type": "string",
+                    "description": "Natural language description of the infrastructure to create"
+                  },
+                  "iac_type": {
+                    "type": "string",
+                    "description": "Type of IaC to generate",
+                    "enum": ["terraform", "cloudformation", "cdk"],
+                    "default": "terraform"
+                  },
+                  "validation_errors": {
+                    "type": "string",
+                    "description": "Validation errors from a previous attempt, used to guide regeneration"
+                  },
+                  "previous_code": {
+                    "type": "string",
+                    "description": "The previously generated code that failed validation"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Code generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "generated_code": { "type": "string" },
+                    "iac_type": { "type": "string" },
+                    "user_request": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "error": { "type": "string" } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

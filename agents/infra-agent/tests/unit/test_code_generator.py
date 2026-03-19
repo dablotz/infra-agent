@@ -1,7 +1,7 @@
 """Unit tests for code_generator Lambda handler.
 
 Covers both initial generation (no validation_errors) and error-guided
-regeneration (validation_errors present), since the two code paths are now
+regeneration (validation_errors present), since the two code paths are
 handled by the same Lambda.
 """
 
@@ -37,17 +37,40 @@ SAMPLE_TF_CODE = 'resource "aws_s3_bucket" "example" {\n  bucket = "my-bucket"\n
 FIXED_TF_CODE = 'resource "aws_s3_bucket" "fixed" {\n  bucket = "fixed-bucket"\n}'
 
 BASE_EVENT = {
-    "user_request": "Create an S3 bucket with versioning enabled",
-    "iac_type": "terraform",
+    "actionGroup": "GenerateIaC",
+    "apiPath": "/generate-iac",
+    "httpMethod": "POST",
+    "requestBody": {
+        "content": {
+            "application/json": {
+                "properties": [
+                    {"name": "user_request", "type": "string",
+                     "value": "Create an S3 bucket with versioning enabled"},
+                    {"name": "iac_type", "type": "string", "value": "terraform"},
+                ]
+            }
+        }
+    },
 }
 
 REGEN_EVENT = {
-    **BASE_EVENT,
-    "generated_code": SAMPLE_TF_CODE,
-    "validation_errors": [
-        "Terraform validate failed: Error: Missing required argument 'bucket'"
-    ],
-    "retry_count": 1,
+    "actionGroup": "GenerateIaC",
+    "apiPath": "/generate-iac",
+    "httpMethod": "POST",
+    "requestBody": {
+        "content": {
+            "application/json": {
+                "properties": [
+                    {"name": "user_request", "type": "string",
+                     "value": "Create an S3 bucket with versioning enabled"},
+                    {"name": "iac_type", "type": "string", "value": "terraform"},
+                    {"name": "previous_code", "type": "string", "value": SAMPLE_TF_CODE},
+                    {"name": "validation_errors", "type": "string",
+                     "value": "Terraform validate failed: Error: Missing required argument 'bucket'"},
+                ]
+            }
+        }
+    },
 }
 
 
@@ -73,6 +96,10 @@ def _nova_mock(text: str) -> MagicMock:
     return mock
 
 
+def _body(result):
+    return json.loads(result["response"]["responseBody"]["application/json"]["body"])
+
+
 @pytest.fixture(autouse=True)
 def set_claude_model(monkeypatch):
     monkeypatch.setenv("BEDROCK_MODEL_ID", CLAUDE_MODEL_ID)
@@ -83,14 +110,33 @@ def set_claude_model(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_returns_required_fields(lambda_context):
+def test_returns_bedrock_action_group_envelope(lambda_context):
     result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=_claude_mock(SAMPLE_TF_CODE))
 
-    assert result["statusCode"] == 200
-    assert result["generated_code"] == SAMPLE_TF_CODE
-    assert result["user_request"] == BASE_EVENT["user_request"]
-    assert result["iac_type"] == "terraform"
-    assert result["retry_count"] == 0
+    assert result["messageVersion"] == "1.0"
+    assert result["response"]["actionGroup"] == "GenerateIaC"
+    assert result["response"]["apiPath"] == "/generate-iac"
+    assert result["response"]["httpStatusCode"] == 200
+
+
+def test_returns_required_body_fields(lambda_context):
+    result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=_claude_mock(SAMPLE_TF_CODE))
+    body = _body(result)
+
+    assert body["generated_code"] == SAMPLE_TF_CODE
+    assert body["user_request"] == "Create an S3 bucket with versioning enabled"
+    assert body["iac_type"] == "terraform"
+
+
+def test_missing_user_request_returns_400(lambda_context):
+    event = {
+        **BASE_EVENT,
+        "requestBody": {"content": {"application/json": {"properties": []}}},
+    }
+    result = lambda_handler(event, lambda_context, bedrock_client=_claude_mock(SAMPLE_TF_CODE))
+
+    assert result["response"]["httpStatusCode"] == 400
+    assert "error" in _body(result)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +147,7 @@ def test_returns_required_fields(lambda_context):
 def test_claude_model_extracts_content_text(lambda_context):
     result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=_claude_mock(SAMPLE_TF_CODE))
 
-    assert result["generated_code"] == SAMPLE_TF_CODE
+    assert _body(result)["generated_code"] == SAMPLE_TF_CODE
 
 
 def test_claude_request_body_format(lambda_context):
@@ -119,7 +165,7 @@ def test_claude_prompt_contains_user_request(lambda_context):
     lambda_handler(BASE_EVENT, lambda_context, bedrock_client=mock)
 
     body = json.loads(mock.invoke_model.call_args.kwargs["body"])
-    assert BASE_EVENT["user_request"] in body["messages"][0]["content"]
+    assert "Create an S3 bucket with versioning enabled" in body["messages"][0]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -131,22 +177,22 @@ def test_strips_hcl_fenced_code_block(lambda_context):
     mock = _claude_mock(f"```hcl\n{SAMPLE_TF_CODE}\n```")
     result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=mock)
 
-    assert "```" not in result["generated_code"]
-    assert result["generated_code"] == SAMPLE_TF_CODE
+    assert "```" not in _body(result)["generated_code"]
+    assert _body(result)["generated_code"] == SAMPLE_TF_CODE
 
 
 def test_strips_generic_fenced_code_block(lambda_context):
     mock = _claude_mock(f"```\n{SAMPLE_TF_CODE}\n```")
     result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=mock)
 
-    assert "```" not in result["generated_code"]
+    assert "```" not in _body(result)["generated_code"]
 
 
 def test_strips_leading_and_trailing_whitespace(lambda_context):
     mock = _claude_mock(f"\n\n{SAMPLE_TF_CODE}\n\n")
     result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=mock)
 
-    assert result["generated_code"] == SAMPLE_TF_CODE
+    assert _body(result)["generated_code"] == SAMPLE_TF_CODE
 
 
 # ---------------------------------------------------------------------------
@@ -157,15 +203,8 @@ def test_strips_leading_and_trailing_whitespace(lambda_context):
 def test_regeneration_mode_returns_fixed_code(lambda_context):
     result = lambda_handler(REGEN_EVENT, lambda_context, bedrock_client=_claude_mock(FIXED_TF_CODE))
 
-    assert result["generated_code"] == FIXED_TF_CODE
-    assert result["statusCode"] == 200
-
-
-def test_regeneration_mode_retry_count_passed_through(lambda_context):
-    """retry_count is incremented by Step Functions IncrementRetry, not this Lambda."""
-    result = lambda_handler(REGEN_EVENT, lambda_context, bedrock_client=_claude_mock(FIXED_TF_CODE))
-
-    assert result["retry_count"] == 1
+    assert _body(result)["generated_code"] == FIXED_TF_CODE
+    assert result["response"]["httpStatusCode"] == 200
 
 
 def test_regeneration_mode_prompt_includes_validation_errors(lambda_context):
@@ -187,15 +226,28 @@ def test_regeneration_mode_prompt_includes_previous_code(lambda_context):
 
 
 def test_regeneration_mode_without_previous_code_still_works(lambda_context):
-    event = {**REGEN_EVENT}
-    del event["generated_code"]
+    event = {
+        "actionGroup": "GenerateIaC",
+        "apiPath": "/generate-iac",
+        "httpMethod": "POST",
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "properties": [
+                        {"name": "user_request", "type": "string", "value": "Create an S3 bucket"},
+                        {"name": "validation_errors", "type": "string",
+                         "value": "Error: missing required argument"},
+                    ]
+                }
+            }
+        },
+    }
     result = lambda_handler(event, lambda_context, bedrock_client=_claude_mock(FIXED_TF_CODE))
 
-    assert result["statusCode"] == 200
+    assert result["response"]["httpStatusCode"] == 200
 
 
 def test_generation_mode_prompt_has_no_error_block(lambda_context):
-    """Initial generation must not contain regeneration-specific sections."""
     mock = _claude_mock(SAMPLE_TF_CODE)
     lambda_handler(BASE_EVENT, lambda_context, bedrock_client=mock)
 
@@ -205,19 +257,13 @@ def test_generation_mode_prompt_has_no_error_block(lambda_context):
     assert "VALIDATION ERRORS" not in prompt
 
 
-def test_generation_mode_initial_retry_count_is_zero(lambda_context):
-    result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=_claude_mock(SAMPLE_TF_CODE))
-
-    assert result["retry_count"] == 0
-
-
 # ---------------------------------------------------------------------------
 # _build_prompt unit tests
 # ---------------------------------------------------------------------------
 
 
 def test_build_prompt_generation_mode_no_previous_block():
-    prompt = _build_prompt("terraform", "Create an S3 bucket", [], "")
+    prompt = _build_prompt("terraform", "Create an S3 bucket", "", "")
 
     assert "PREVIOUS ATTEMPT" not in prompt
     assert "VALIDATION ERRORS" not in prompt
@@ -225,7 +271,7 @@ def test_build_prompt_generation_mode_no_previous_block():
 
 
 def test_build_prompt_regeneration_mode_has_error_block():
-    errors = ["Error: Missing required argument"]
+    errors = "Error: Missing required argument"
     prompt = _build_prompt("terraform", "Create an S3 bucket", errors, "")
 
     assert "VALIDATION ERRORS IN PREVIOUS ATTEMPT" in prompt
@@ -235,7 +281,7 @@ def test_build_prompt_regeneration_mode_has_error_block():
 
 
 def test_build_prompt_regeneration_with_code_includes_previous_code():
-    errors = ["Error: invalid resource type"]
+    errors = "Error: invalid resource type"
     previous = 'resource "bad_resource" "x" {}'
     prompt = _build_prompt("terraform", "Create an S3 bucket", errors, previous)
 
@@ -244,7 +290,7 @@ def test_build_prompt_regeneration_with_code_includes_previous_code():
 
 
 def test_build_prompt_regeneration_without_previous_code_omits_code_section():
-    errors = ["Error: something wrong"]
+    errors = "Error: something wrong"
     prompt = _build_prompt("terraform", "Create an S3 bucket", errors, "")
 
     assert "PREVIOUS ATTEMPT CODE" not in prompt
@@ -253,8 +299,8 @@ def test_build_prompt_regeneration_without_previous_code_omits_code_section():
 
 def test_build_prompt_user_request_always_present():
     user_request = "Create a VPC with two subnets"
-    prompt_gen = _build_prompt("terraform", user_request, [], "")
-    prompt_regen = _build_prompt("terraform", user_request, ["some error"], "")
+    prompt_gen = _build_prompt("terraform", user_request, "", "")
+    prompt_regen = _build_prompt("terraform", user_request, "some error", "")
 
     assert user_request in prompt_gen
     assert user_request in prompt_regen

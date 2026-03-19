@@ -27,13 +27,22 @@ _run_checkov = _mod._run_checkov
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+SAMPLE_CODE = 'resource "aws_s3_bucket" "example" {\n  bucket = "my-bucket"\n}'
+
 BASE_EVENT = {
-    "user_request": "Create an S3 bucket with versioning enabled",
-    "iac_type": "terraform",
-    "generated_code": 'resource "aws_s3_bucket" "example" {\n  bucket = "my-bucket"\n}',
-    "validation_status": "passed",
-    "validation_errors": [],
-    "retry_count": 0,
+    "actionGroup": "ScanIaC",
+    "apiPath": "/scan-iac",
+    "httpMethod": "POST",
+    "requestBody": {
+        "content": {
+            "application/json": {
+                "properties": [
+                    {"name": "generated_code", "type": "string", "value": SAMPLE_CODE},
+                    {"name": "iac_type", "type": "string", "value": "terraform"},
+                ]
+            }
+        }
+    },
 }
 
 _CHECKOV_NO_FINDINGS = json.dumps(
@@ -58,6 +67,36 @@ _CHECKOV_WITH_FINDINGS = json.dumps(
 ).encode()
 
 
+def _body(result):
+    return json.loads(result["response"]["responseBody"]["application/json"]["body"])
+
+
+# ---------------------------------------------------------------------------
+# Bedrock action group envelope
+# ---------------------------------------------------------------------------
+
+
+@patch("subprocess.run")
+def test_returns_bedrock_envelope(mock_run, lambda_context):
+    mock_run.return_value = MagicMock(stdout=_CHECKOV_NO_FINDINGS, returncode=0)
+    result = lambda_handler(BASE_EVENT, lambda_context)
+
+    assert result["messageVersion"] == "1.0"
+    assert result["response"]["actionGroup"] == "ScanIaC"
+    assert result["response"]["httpStatusCode"] == 200
+
+
+def test_missing_generated_code_returns_400(lambda_context):
+    event = {
+        **BASE_EVENT,
+        "requestBody": {"content": {"application/json": {"properties": []}}},
+    }
+    result = lambda_handler(event, lambda_context)
+
+    assert result["response"]["httpStatusCode"] == 400
+    assert "error" in _body(result)
+
+
 # ---------------------------------------------------------------------------
 # lambda_handler — happy paths
 # ---------------------------------------------------------------------------
@@ -67,50 +106,41 @@ _CHECKOV_WITH_FINDINGS = json.dumps(
 def test_no_findings_returns_passed(mock_run, lambda_context):
     mock_run.return_value = MagicMock(stdout=_CHECKOV_NO_FINDINGS, returncode=0)
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    assert result["security_status"] == "passed"
-    assert result["security_findings"] == []
+    assert body["security_status"] == "passed"
+    assert body["finding_count"] == 0
+    assert body["findings_summary"] == ""
 
 
 @patch("subprocess.run")
 def test_findings_return_warnings_status(mock_run, lambda_context):
     mock_run.return_value = MagicMock(stdout=_CHECKOV_WITH_FINDINGS, returncode=1)
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    assert result["security_status"] == "warnings"
-    assert len(result["security_findings"]) == 1
+    assert body["security_status"] == "warnings"
+    assert body["finding_count"] == 1
 
 
 @patch("subprocess.run")
-def test_finding_fields_extracted_correctly(mock_run, lambda_context):
+def test_findings_summary_contains_check_id(mock_run, lambda_context):
     mock_run.return_value = MagicMock(stdout=_CHECKOV_WITH_FINDINGS, returncode=1)
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    finding = result["security_findings"][0]
-    assert finding["check_id"] == "CKV_AWS_18"
-    assert finding["check_name"] == "Ensure the S3 bucket has access logging enabled"
-    assert finding["severity"] == "MEDIUM"
-    assert finding["resource"] == "aws_s3_bucket.example"
-    assert finding["guideline"] == "https://docs.bridgecrew.io/docs/s3_13"
+    assert "CKV_AWS_18" in body["findings_summary"]
+    assert "aws_s3_bucket.example" in body["findings_summary"]
 
 
 @patch("subprocess.run")
 def test_empty_stdout_treated_as_no_findings(mock_run, lambda_context):
     mock_run.return_value = MagicMock(stdout=b"", returncode=0)
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    assert result["security_status"] == "passed"
-    assert result["security_findings"] == []
-
-
-@patch("subprocess.run")
-def test_event_fields_passed_through(mock_run, lambda_context):
-    mock_run.return_value = MagicMock(stdout=_CHECKOV_NO_FINDINGS, returncode=0)
-    result = lambda_handler(BASE_EVENT, lambda_context)
-
-    assert result["user_request"] == BASE_EVENT["user_request"]
-    assert result["validation_status"] == "passed"
-    assert result["retry_count"] == 0
+    assert body["security_status"] == "passed"
+    assert body["finding_count"] == 0
 
 
 # ---------------------------------------------------------------------------

@@ -8,9 +8,41 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
+def _get_props(event):
+    return (event.get("requestBody", {})
+            .get("content", {})
+            .get("application/json", {})
+            .get("properties", []))
+
+
+def _prop(props, name, default=""):
+    return next((p["value"] for p in props if p["name"] == name), default)
+
+
+def _response(event, status_code, body_dict):
+    return {
+        "messageVersion": "1.0",
+        "response": {
+            "actionGroup": event.get("actionGroup", ""),
+            "apiPath": event.get("apiPath", ""),
+            "httpMethod": event.get("httpMethod", "POST"),
+            "httpStatusCode": status_code,
+            "responseBody": {
+                "application/json": {
+                    "body": json.dumps(body_dict)
+                }
+            }
+        }
+    }
+
+
 def lambda_handler(event, context):
-    generated_code = event.get("generated_code", "")
-    iac_type = event.get("iac_type", "terraform")
+    props = _get_props(event)
+    generated_code = _prop(props, "generated_code")
+    iac_type = _prop(props, "iac_type", "terraform")
+
+    if not generated_code:
+        return _response(event, 400, {"error": "generated_code is required"})
 
     logger.info(json.dumps({"message": "security_scan_started", "iac_type": iac_type}))
 
@@ -28,19 +60,26 @@ def lambda_handler(event, context):
         "status": status,
         "finding_count": len(findings),
     }))
-    return {
-        **event,
+
+    findings_summary = ""
+    if findings:
+        lines = [f"- {f['check_id']}: {f['check_name']} (resource: {f['resource']})"
+                 for f in findings]
+        findings_summary = "\n".join(lines)
+
+    return _response(event, 200, {
         "security_status": status,
-        "security_findings": findings,
-    }
+        "finding_count": len(findings),
+        "findings_summary": findings_summary,
+    })
 
 
 def _run_checkov(directory: str) -> list:
     """Run checkov on the given directory and return a list of findings.
 
     Raises RuntimeError on infrastructure failure (checkov not found, timeout, etc.)
-    so Step Functions routes the execution to the Failed state rather than silently
-    treating an unrun scan as a passing result.
+    so the agent can surface the error rather than silently treating an unrun scan
+    as a passing result.
     """
     try:
         result = subprocess.run(

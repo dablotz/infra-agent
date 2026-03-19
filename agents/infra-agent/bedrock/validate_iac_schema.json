@@ -1,0 +1,70 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Validate IaC API",
+    "version": "1.0.0",
+    "description": "Validate Infrastructure as Code using terraform init/validate and tflint"
+  },
+  "paths": {
+    "/validate-iac": {
+      "post": {
+        "summary": "Validate IaC code",
+        "description": "Runs terraform init, terraform validate, and tflint on the provided code. Returns validation_status of 'passed', 'failed', or 'skipped' (for non-Terraform types). If failed, validation_errors contains the error messages to pass back to the code generator.",
+        "operationId": "validateIaC",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["generated_code"],
+                "properties": {
+                  "generated_code": {
+                    "type": "string",
+                    "description": "The IaC code to validate"
+                  },
+                  "iac_type": {
+                    "type": "string",
+                    "description": "Type of IaC code",
+                    "enum": ["terraform", "cloudformation", "cdk"],
+                    "default": "terraform"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Validation complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "validation_status": {
+                      "type": "string",
+                      "description": "passed, failed, or skipped"
+                    },
+                    "validation_errors": {
+                      "type": "string",
+                      "description": "Newline-separated error messages if validation failed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "error": { "type": "string" } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Scan IaC API",
+    "version": "1.0.0",
+    "description": "Security scan Infrastructure as Code using Checkov"
+  },
+  "paths": {
+    "/scan-iac": {
+      "post": {
+        "summary": "Security scan IaC code",
+        "description": "Runs Checkov on the provided code and returns a summary of any security findings. A security_status of 'warnings' does not block upload — report the findings to the user alongside the S3 URI.",
+        "operationId": "scanIaC",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["generated_code"],
+                "properties": {
+                  "generated_code": {
+                    "type": "string",
+                    "description": "The IaC code to security scan"
+                  },
+                  "iac_type": {
+                    "type": "string",
+                    "description": "Type of IaC code",
+                    "enum": ["terraform", "cloudformation", "cdk"],
+                    "default": "terraform"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Scan complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "security_status": {
+                      "type": "string",
+                      "description": "passed or warnings"
+                    },
+                    "finding_count": {
+                      "type": "integer",
+                      "description": "Number of security findings"
+                    },
+                    "findings_summary": {
+                      "type": "string",
+                      "description": "Human-readable summary of findings, one per line"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "error": { "type": "string" } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

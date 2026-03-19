@@ -22,8 +22,3 @@ output "output_bucket" {
   description = "S3 bucket for generated IaC artifacts"
   value       = aws_s3_bucket.iac_output.id
 }
-
-output "state_machine_arn" {
-  description = "Step Functions state machine ARN"
-  value       = aws_sfn_state_machine.iac_generator.arn
-}

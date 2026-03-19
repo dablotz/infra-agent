@@ -8,63 +8,86 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
+def _get_props(event):
+    return (event.get("requestBody", {})
+            .get("content", {})
+            .get("application/json", {})
+            .get("properties", []))
+
+
+def _prop(props, name, default=""):
+    return next((p["value"] for p in props if p["name"] == name), default)
+
+
+def _response(event, status_code, body_dict):
+    return {
+        "messageVersion": "1.0",
+        "response": {
+            "actionGroup": event.get("actionGroup", ""),
+            "apiPath": event.get("apiPath", ""),
+            "httpMethod": event.get("httpMethod", "POST"),
+            "httpStatusCode": status_code,
+            "responseBody": {
+                "application/json": {
+                    "body": json.dumps(body_dict)
+                }
+            }
+        }
+    }
+
+
 def lambda_handler(event, context, bedrock_client=None):
     bedrock = bedrock_client or boto3.client("bedrock-runtime")
 
-    user_request = event.get("user_request", "")
-    iac_type = event.get("iac_type", "terraform")
-    validation_errors = event.get("validation_errors", [])
-    previous_code = event.get("generated_code", "")
-    # retry_count is managed by the Step Functions IncrementRetry state.
-    # Passed through unchanged so the pipeline state remains consistent.
-    retry_count = event.get("retry_count", 0)
+    props = _get_props(event)
+    user_request = _prop(props, "user_request")
+    iac_type = _prop(props, "iac_type", "terraform")
+    validation_errors = _prop(props, "validation_errors")
+    previous_code = _prop(props, "previous_code")
 
-    prompt = _build_prompt(iac_type, user_request, validation_errors, previous_code)
+    if not user_request:
+        return _response(event, 400, {"error": "user_request is required"})
 
     model_id = os.environ.get("BEDROCK_MODEL_ID", "")
-
-    body = json.dumps(
-        {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-    )
+    prompt = _build_prompt(iac_type, user_request, validation_errors, previous_code)
 
     logger.info(json.dumps({
         "message": "invoking_model",
         "model_id": model_id,
-        "retry_count": retry_count,
         "regenerating": bool(validation_errors),
     }))
+
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": prompt}],
+    })
 
     response = bedrock.invoke_model(modelId=model_id, body=body)
     result = json.loads(response["body"].read())
 
-    # Extract generated code based on model type
     if "nova" in model_id.lower():
         generated_code = result["output"]["message"]["content"][0]["text"]
     else:
         generated_code = result["content"][0]["text"]
 
-    # Strip markdown code blocks if present
     generated_code = re.sub(r"^```\w*\n", "", generated_code)
     generated_code = re.sub(r"\n```$", "", generated_code)
     generated_code = generated_code.strip()
 
-    return {
-        "statusCode": 200,
-        "user_request": user_request,
-        "iac_type": iac_type,
+    logger.info(json.dumps({"message": "code_generated", "iac_type": iac_type}))
+
+    return _response(event, 200, {
         "generated_code": generated_code,
-        "retry_count": retry_count,
-    }
+        "iac_type": iac_type,
+        "user_request": user_request,
+    })
 
 
 def _build_prompt(
     iac_type: str,
     user_request: str,
-    validation_errors: list,
+    validation_errors: str = "",
     previous_code: str = "",
 ) -> str:
     """Build the LLM prompt for either initial generation or error-guided regeneration.
@@ -77,10 +100,7 @@ def _build_prompt(
         previous_block = ""
         if previous_code:
             previous_block += f"\n\nPREVIOUS ATTEMPT CODE:\n{previous_code}"
-        previous_block += (
-            "\n\nVALIDATION ERRORS IN PREVIOUS ATTEMPT:\n"
-            + "\n".join(validation_errors)
-        )
+        previous_block += f"\n\nVALIDATION ERRORS IN PREVIOUS ATTEMPT:\n{validation_errors}"
         provider_note = (
             "Include necessary provider configuration with proper version constraints"
         )

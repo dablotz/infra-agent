@@ -1,41 +1,44 @@
 # Multi-Agent IaC System
 
-A Bedrock-powered multi-agent system for infrastructure as code generation, validation, and documentation. Users interact with an orchestrator agent that coordinates specialized sub-agents — currently the infra-agent is implemented, with the orchestrator and docs-agent planned.
+A Bedrock-powered multi-agent system for infrastructure as code generation, validation, and documentation. Users interact with an orchestrator that routes requests to specialized sub-agents.
 
-## Planned Architecture
+## Architecture
 
 ```
 User
- └── Orchestrator Agent          (planned)
+ └── Orchestrator Agent          ✅ implemented (supervisor mode)
        ├── Infra-Agent           ✅ implemented
-       │     └── Step Functions pipeline
-       │           ├── Code Generator   — Bedrock invoke (retries on validation failure)
-       │           ├── Validator        — terraform init + validate + tflint
-       │           ├── Security Scanner — Checkov
-       │           └── Artifact Uploader — S3
+       │     └── 4 action groups (agent-native retry loop)
+       │           ├── GenerateIaC  — Bedrock invoke (initial + regeneration)
+       │           ├── ValidateIaC  — terraform init + validate + tflint
+       │           ├── ScanIaC      — Checkov
+       │           └── UploadIaC    — S3
        └── Docs-Agent            (planned)
 ```
 
 ### Infra-Agent
 
-Accepts a natural language infrastructure description and produces Terraform, CloudFormation, or CDK that has been syntax-validated and security-scanned before upload to S3. The agent runs the full pipeline synchronously and returns the S3 URI in its response.
+Accepts a natural language infrastructure description and produces Terraform, CloudFormation, or CDK that has been syntax-validated and security-scanned before upload to S3. The agent's own ReAct loop drives the pipeline: it calls each tool in sequence, and if validation fails it passes the errors back to GenerateIaC for a targeted fix before retrying — up to twice.
 
 ## Project Structure
 
 ```
 ├── agents/
-│   └── infra-agent/
-│       ├── bedrock/           # Agent instructions and action group OpenAPI schema
-│       ├── lambda_functions/  # Pipeline Lambda handlers
-│       ├── terraform/         # Agent infrastructure (IAM, Step Functions, Bedrock, Guardrails)
-│       └── tests/             # Unit tests (65 tests, no AWS account required)
+│   ├── infra-agent/
+│   │   ├── bedrock/           # Agent instructions and 4 OpenAPI action group schemas
+│   │   ├── lambda_functions/  # Pipeline Lambda handlers (one per action group)
+│   │   ├── terraform/         # Agent infrastructure (IAM, Bedrock, Guardrails)
+│   │   └── tests/             # Unit tests (57 tests, no AWS account required)
+│   └── orchestrator/
+│       ├── bedrock/           # Supervisor agent instructions
+│       └── terraform/         # Orchestrator agent + collaborator registration
 ├── shared/
 │   ├── terraform/             # Shared S3 buckets, EventBridge bus, Lambda layers bucket
 │   ├── lambda_layers/         # Built Lambda layers (terraform-tools, security-tools)
 │   └── scripts/               # Layer build scripts
 ├── docs/
 │   ├── runbook.md             # Deployment, operations, and troubleshooting guide
-│   └── post-mortem.md         # Root cause analysis of issues encountered during development
+│   └── post-mortem.md         # Root cause analysis and architecture decisions
 ├── Dockerfile                 # Build environment (terraform, tflint, checkov, awscli)
 ├── docker-compose.yml         # Local development container
 └── Makefile                   # Top-level deployment targets
@@ -44,7 +47,7 @@ Accepts a natural language infrastructure description and produces Terraform, Cl
 ## Prerequisites
 
 - Docker and Docker Compose (recommended for builds)
-- AWS CLI configured with credentials that have permissions for: Bedrock, Lambda, Step Functions, S3, IAM, CloudWatch
+- AWS CLI configured with credentials that have permissions for: Bedrock, Lambda, S3, IAM, CloudWatch
 - Terraform >= 1.14
 - Python 3.12+ (for running tests locally)
 - Amazon Bedrock model access enabled for **Claude Sonnet 4.5** (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`) — enable at **Bedrock console → Model access**
@@ -142,15 +145,13 @@ make test
 See [docs/runbook.md](docs/runbook.md) for:
 - Full deployment walkthrough
 - Diagnosing 403 Bedrock access denied errors via CloudTrail
-- Agent infinite loop / empty response
 - Lambda layer binary not found
 - CloudWatch Logs Insights queries for structured log fields
 
-See [docs/post-mortem.md](docs/post-mortem.md) for root cause analysis of the three main issues encountered during development: Bedrock IAM ARN formats for cross-region inference profiles, synchronous vs asynchronous action group design, and the OpenAPI `requestBody` event structure.
+See [docs/post-mortem.md](docs/post-mortem.md) for root cause analysis of issues and architecture decisions encountered during development: Bedrock IAM ARN formats, the OpenAPI `requestBody` event structure, and the rationale for removing Step Functions in favor of the agent's native retry loop.
 
 ## Roadmap
 
-- **Orchestrator agent** — single entry point that routes requests to sub-agents and coordinates workflows across them via EventBridge
 - **Docs-Agent** — receives IaC artifacts via EventBridge and generates human-readable documentation
 
 ## Cost Estimate
@@ -159,6 +160,5 @@ See [docs/post-mortem.md](docs/post-mortem.md) for root cause analysis of the th
 |---|---|
 | Shared infrastructure (S3, EventBridge) | ~$0.50 |
 | Lambda (100 invocations) | ~$0.20 |
-| Step Functions (100 executions) | ~$0.03 |
 | Bedrock | Variable — depends on token usage |
 | **Total** | **~$1–5/month** |

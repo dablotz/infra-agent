@@ -109,6 +109,8 @@ The root issue was a mismatch between what the instructions promised (a synchron
 
 **Option chosen:** Make the action group handler synchronous. It now polls `describe_execution` every 5 seconds until the pipeline completes, then returns the actual S3 URI, validation status, and security status.
 
+> **Superseded:** This synchronous polling approach was later replaced by a discrete action group architecture that eliminates Step Functions entirely. See *Architecture Decision: Agent-Native Pipeline* below.
+
 ```python
 while True:
     status_response = sfn.describe_execution(executionArn=execution_arn)
@@ -208,3 +210,87 @@ parameters = properties or event.get("parameters", [])
 | `user_request` 400 | AWS SDK event contract misunderstanding | ~15 min | Bedrock orchestration trace |
 
 All three issues were invisible at deploy time and only surfaced during runtime testing. The common thread: **the Bedrock orchestration trace identifies the symptom but not the root cause — always go one layer deeper** (CloudTrail for IAM, the raw Lambda event for parameter extraction, Step Functions execution history for pipeline failures).
+
+---
+
+## Architecture Decision: Agent-Native Pipeline (Removing Step Functions)
+
+**Date:** 2026-03-19
+**Type:** Deliberate architectural change — not a bug fix
+
+### Context
+
+After the initial infra-agent was working, work began on adding an orchestrator agent. That design conversation surfaced a fundamental question: **in a multi-agent Bedrock system, is Step Functions the right tool for a retry loop driven by model output?**
+
+The answer was no. The decision was made to remove Step Functions entirely and replace the single monolithic action group with four discrete ones — one per pipeline stage.
+
+### What the Original Architecture Looked Like
+
+```
+Bedrock Agent
+  └── ActionGroupHandler (1 Lambda, 600s timeout)
+        └── polls Step Functions every 5s
+              └── State Machine
+                    ├── GenerateCode   (Lambda)
+                    ├── ValidateCode   (Lambda) → CheckValidation → CheckRetryCount → IncrementRetry → RegenerateCode
+                    ├── SecurityScan   (Lambda)
+                    └── UploadArtifact (Lambda)
+```
+
+The agent had one tool: "run the whole pipeline and give me the result." Validation retries were hard-coded into the state machine. The agent had no visibility into intermediate results.
+
+### Why This Was Wrong for an Agent System
+
+**1. Retry logic belonged to the model, not the state machine.**
+When Terraform validation fails, the error message carries semantic content: "resource type not found", "missing required argument", "provider version constraint violated". A language model is the right system to read that error and decide how to fix the code. A state machine counter that mechanically retries up to twice provides no such reasoning — it just calls the same Lambda again with the same error appended to a prompt.
+
+**2. The synchronous polling pattern was an anti-pattern that worked around a mismatch.**
+The polling Lambda (600s timeout, `time.sleep(5)` in a loop) existed only because the agent expected a synchronous result but Step Functions Standard Workflows are inherently async. The right fix wasn't a polling workaround — it was removing the layer that forced the mismatch.
+
+**3. Two orchestration layers with no clear boundary.**
+Bedrock's ReAct loop orchestrated the agent, which orchestrated Step Functions, which orchestrated four Lambdas. The middle layer (Step Functions) added cost and complexity without adding value that the agent's own loop couldn't provide.
+
+### What the New Architecture Looks Like
+
+```
+Bedrock Agent
+  ├── GenerateIaC  (Lambda) — generate or regenerate with validation_errors context
+  ├── ValidateIaC  (Lambda) — terraform init + validate + tflint
+  ├── ScanIaC      (Lambda) — Checkov
+  └── UploadIaC    (Lambda) — S3
+```
+
+The agent instructions describe the workflow. The agent's own ReAct loop decides:
+- When to move to the next stage
+- Whether to retry generation and how to frame the regeneration prompt
+- When to give up on validation and proceed anyway
+- What to include in the final response to the user
+
+### What Was Removed
+
+- Step Functions state machine (the `iac-generator` state machine and all its IAM)
+- The action group handler Lambda (the 600s polling function)
+- `code_regenerator` Lambda (its logic was absorbed into `code_generator` as optional params)
+- The concept of retry state being managed by infrastructure
+
+### What Was Gained
+
+- **Better regeneration quality.** The model that generated the code now reads the validation errors as a conversational input and decides how to fix them. This is a richer feedback loop than passing an error string through an `IncrementRetry` Pass state.
+- **Simpler infrastructure.** ~100 lines of Terraform removed. No Step Functions IAM, no log delivery policy workarounds, no execution ARN resource patterns.
+- **Lower cost.** Step Functions Standard Workflows are billed per state transition. At typical volumes the cost was small, but zero is better.
+- **Faster cold paths.** On validation pass the agent moves directly from ValidateIaC to ScanIaC without a state machine round-trip.
+- **Visibility into intermediate results.** The agent can surface validation status and security findings to the user alongside the S3 URI, rather than returning a single opaque "pipeline result."
+
+### Trade-offs Accepted
+
+**Less explicit retry bound.** The state machine enforced a hard maximum of 2 retries at the infrastructure level. The new system relies on the agent instructions ("do not retry more than twice"). The model should follow this, but it is a behavioral constraint rather than a structural one.
+
+**Less visual execution graph.** Step Functions provided a clickable execution history in the AWS console. With the agent loop, pipeline visibility comes from Bedrock's orchestration trace and individual Lambda CloudWatch logs.
+
+**Agent session duration limits.** Bedrock agents have a maximum session duration. For very slow generations or many retries, this could theoretically be reached. In practice, three LLM calls plus three Lambda invocations complete well within the limit.
+
+### Lesson Learned
+
+**Match the tool to the decision-maker.** Step Functions is the right tool when a deterministic system — not a model — makes branching decisions. The moment "should I try again?" depends on reading and understanding an error message, that decision belongs to the model. Encoding it as infrastructure is working against the grain of how agents work.
+
+**Architectural fitness for multi-agent systems requires revisiting single-agent assumptions.** The Step Functions design was reasonable for a standalone pipeline. Once it became a sub-agent in an orchestrated system, the overhead became obvious. When adding orchestration, audit whether existing sub-components still make sense at the new level of abstraction.

@@ -4,6 +4,7 @@ subprocess.run is patched globally so neither terraform nor tflint binaries
 need to be present during testing.
 """
 
+import json
 import subprocess
 import importlib.util
 import pathlib
@@ -45,14 +46,64 @@ resource "aws_s3_bucket" "example" {
 """
 
 BASE_EVENT = {
-    "user_request": "Create an S3 bucket with versioning enabled",
-    "iac_type": "terraform",
-    "generated_code": VALID_TF_CODE,
-    "retry_count": 0,
+    "actionGroup": "ValidateIaC",
+    "apiPath": "/validate-iac",
+    "httpMethod": "POST",
+    "requestBody": {
+        "content": {
+            "application/json": {
+                "properties": [
+                    {"name": "generated_code", "type": "string", "value": VALID_TF_CODE},
+                    {"name": "iac_type", "type": "string", "value": "terraform"},
+                ]
+            }
+        }
+    },
 }
 
 # Successful subprocess return value (non-zero is checked only for tflint)
 _OK = MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+
+def _body(result):
+    return json.loads(result["response"]["responseBody"]["application/json"]["body"])
+
+
+# ---------------------------------------------------------------------------
+# Bedrock action group envelope
+# ---------------------------------------------------------------------------
+
+
+def test_returns_bedrock_envelope(lambda_context):
+    event = {
+        **BASE_EVENT,
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "properties": [
+                        {"name": "generated_code", "type": "string", "value": VALID_TF_CODE},
+                        {"name": "iac_type", "type": "string", "value": "cloudformation"},
+                    ]
+                }
+            }
+        },
+    }
+    result = lambda_handler(event, lambda_context)
+
+    assert result["messageVersion"] == "1.0"
+    assert result["response"]["actionGroup"] == "ValidateIaC"
+    assert result["response"]["httpStatusCode"] == 200
+
+
+def test_missing_generated_code_returns_400(lambda_context):
+    event = {
+        **BASE_EVENT,
+        "requestBody": {"content": {"application/json": {"properties": []}}},
+    }
+    result = lambda_handler(event, lambda_context)
+
+    assert result["response"]["httpStatusCode"] == 400
+    assert "error" in _body(result)
 
 
 # ---------------------------------------------------------------------------
@@ -61,18 +112,43 @@ _OK = MagicMock(returncode=0, stdout=b"", stderr=b"")
 
 
 def test_non_terraform_skips_validation(lambda_context):
-    event = {**BASE_EVENT, "iac_type": "cloudformation"}
+    event = {
+        **BASE_EVENT,
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "properties": [
+                        {"name": "generated_code", "type": "string", "value": VALID_TF_CODE},
+                        {"name": "iac_type", "type": "string", "value": "cloudformation"},
+                    ]
+                }
+            }
+        },
+    }
     result = lambda_handler(event, lambda_context)
+    body = _body(result)
 
-    assert result["validation_status"] == "skipped"
-    assert result["validation_errors"] == []
+    assert body["validation_status"] == "skipped"
+    assert body["validation_errors"] == ""
 
 
 def test_cdk_skips_validation(lambda_context):
-    event = {**BASE_EVENT, "iac_type": "cdk"}
+    event = {
+        **BASE_EVENT,
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "properties": [
+                        {"name": "generated_code", "type": "string", "value": VALID_TF_CODE},
+                        {"name": "iac_type", "type": "string", "value": "cdk"},
+                    ]
+                }
+            }
+        },
+    }
     result = lambda_handler(event, lambda_context)
 
-    assert result["validation_status"] == "skipped"
+    assert _body(result)["validation_status"] == "skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -84,20 +160,10 @@ def test_cdk_skips_validation(lambda_context):
 def test_all_checks_pass_returns_passed(mock_run, lambda_context):
     mock_run.return_value = _OK
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    assert result["validation_status"] == "passed"
-    assert result["validation_errors"] == []
-
-
-@patch("subprocess.run")
-def test_event_fields_passed_through_on_success(mock_run, lambda_context):
-    mock_run.return_value = _OK
-    result = lambda_handler(BASE_EVENT, lambda_context)
-
-    assert result["user_request"] == BASE_EVENT["user_request"]
-    assert result["generated_code"] == BASE_EVENT["generated_code"]
-    assert result["iac_type"] == "terraform"
-    assert result["retry_count"] == 0
+    assert body["validation_status"] == "passed"
+    assert body["validation_errors"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -111,10 +177,11 @@ def test_terraform_init_failure_returns_failed(mock_run, lambda_context):
         1, "terraform", stderr=b"Error: Could not load plugin"
     )
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    assert result["validation_status"] == "failed"
-    assert any("init failed" in e for e in result["validation_errors"])
-    assert any("Could not load plugin" in e for e in result["validation_errors"])
+    assert body["validation_status"] == "failed"
+    assert "init failed" in body["validation_errors"]
+    assert "Could not load plugin" in body["validation_errors"]
 
 
 @patch("subprocess.run")
@@ -142,10 +209,11 @@ def test_terraform_validate_failure_returns_failed(mock_run, lambda_context):
         MagicMock(returncode=0, stdout=b"", stderr=b""),  # tflint
     ]
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    assert result["validation_status"] == "failed"
-    assert any("validate failed" in e for e in result["validation_errors"])
-    assert any("Missing required argument" in e for e in result["validation_errors"])
+    assert body["validation_status"] == "failed"
+    assert "validate failed" in body["validation_errors"]
+    assert "Missing required argument" in body["validation_errors"]
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +230,11 @@ def test_tflint_warnings_reported_as_failed(mock_run, lambda_context):
         MagicMock(returncode=1, stdout=b"Warning: Missing version constraints", stderr=b""),
     ]
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    assert result["validation_status"] == "failed"
-    assert any("tflint" in e for e in result["validation_errors"])
-    assert any("Missing version constraints" in e for e in result["validation_errors"])
+    assert body["validation_status"] == "failed"
+    assert "tflint" in body["validation_errors"]
+    assert "Missing version constraints" in body["validation_errors"]
 
 
 @patch("subprocess.run")
@@ -177,9 +246,10 @@ def test_tflint_clean_does_not_add_errors(mock_run, lambda_context):
         MagicMock(returncode=0, stdout=b"", stderr=b""),  # tflint clean
     ]
     result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
 
-    assert result["validation_status"] == "passed"
-    assert result["validation_errors"] == []
+    assert body["validation_status"] == "passed"
+    assert body["validation_errors"] == ""
 
 
 # ---------------------------------------------------------------------------

@@ -148,103 +148,6 @@ resource "aws_lambda_function" "artifact_uploader" {
   }
 }
 
-# Step Functions State Machine
-resource "aws_sfn_state_machine" "iac_generator" {
-  name     = "${var.project_name}-iac-generator"
-  role_arn = aws_iam_role.step_functions.arn
-
-  definition = jsonencode({
-    Comment = "IaC Generation Pipeline"
-    StartAt = "GenerateCode"
-    States = {
-      GenerateCode = {
-        Type     = "Task"
-        Resource = aws_lambda_function.code_generator.arn
-        Next     = "ValidateCode"
-        Catch = [{
-          ErrorEquals = ["States.ALL"]
-          Next        = "Failed"
-        }]
-      }
-      ValidateCode = {
-        Type     = "Task"
-        Resource = aws_lambda_function.validator.arn
-        Next     = "CheckValidation"
-        Catch = [{
-          ErrorEquals = ["States.ALL"]
-          Next        = "Failed"
-        }]
-      }
-      CheckValidation = {
-        Type = "Choice"
-        Choices = [
-          {
-            Variable     = "$.validation_status"
-            StringEquals = "failed"
-            Next         = "CheckRetryCount"
-          }
-        ]
-        Default = "SecurityScan"
-      }
-      CheckRetryCount = {
-        Type = "Choice"
-        Choices = [
-          {
-            Variable        = "$.retry_count"
-            NumericLessThan = 2
-            Next            = "IncrementRetry"
-          }
-        ]
-        Default = "SecurityScan"
-      }
-      IncrementRetry = {
-        Type = "Pass"
-        Parameters = {
-          "user_request.$"      = "$.user_request"
-          "iac_type.$"          = "$.iac_type"
-          "generated_code.$"    = "$.generated_code"
-          "validation_errors.$" = "$.validation_errors"
-          "retry_count.$"       = "States.MathAdd($.retry_count, 1)"
-        }
-        Next = "RegenerateCode"
-      }
-      RegenerateCode = {
-        Type     = "Task"
-        Resource = aws_lambda_function.code_generator.arn
-        Next     = "ValidateCode"
-        Catch = [{
-          ErrorEquals = ["States.ALL"]
-          Next        = "Failed"
-        }]
-      }
-      SecurityScan = {
-        Type     = "Task"
-        Resource = aws_lambda_function.security_scanner.arn
-        Next     = "UploadArtifact"
-        Catch = [{
-          ErrorEquals = ["States.ALL"]
-          Next        = "Failed"
-        }]
-      }
-      UploadArtifact = {
-        Type     = "Task"
-        Resource = aws_lambda_function.artifact_uploader.arn
-        End      = true
-      }
-      Failed = {
-        Type  = "Fail"
-        Cause = "Pipeline execution failed"
-      }
-    }
-  })
-
-  logging_configuration {
-    log_destination        = "${aws_cloudwatch_log_group.step_functions.arn}:*"
-    include_execution_data = true
-    level                  = "ALL"
-  }
-}
-
 # Bedrock Agent
 resource "aws_bedrockagent_agent" "iac_agent" {
   agent_name              = var.project_name
@@ -259,51 +162,95 @@ resource "aws_bedrockagent_agent" "iac_agent" {
   }
 }
 
-resource "aws_bedrockagent_agent_action_group" "iac_generator" {
+# Action Group: GenerateIaC → code_generator Lambda
+resource "aws_bedrockagent_agent_action_group" "generate_iac" {
   agent_id                   = aws_bedrockagent_agent.iac_agent.id
   agent_version              = "DRAFT"
-  action_group_name          = "IaCGeneratorActionGroup"
+  action_group_name          = "GenerateIaC"
   skip_resource_in_use_check = true
   action_group_executor {
-    lambda = aws_lambda_function.action_group_handler.arn
+    lambda = aws_lambda_function.code_generator.arn
   }
   api_schema {
-    payload = file("${path.module}/../bedrock/action_group_schema.json")
+    payload = file("${path.module}/../bedrock/generate_iac_schema.json")
   }
 }
 
-# Lambda: Action Group Handler
-resource "aws_lambda_function" "action_group_handler" {
-  filename         = "${path.module}/../lambda_functions/action_group_handler.zip"
-  function_name    = "${var.project_name}-action-group-handler"
-  role             = aws_iam_role.lambda_action_group.arn
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  timeout          = 600
-  memory_size      = 256
-  source_code_hash = filebase64sha256("${path.module}/../lambda_functions/action_group_handler.zip")
-
-  environment {
-    variables = {
-      STATE_MACHINE_ARN = aws_sfn_state_machine.iac_generator.arn
-    }
-  }
-}
-
-resource "aws_lambda_permission" "bedrock_invoke" {
+resource "aws_lambda_permission" "bedrock_invoke_generator" {
   statement_id  = "AllowBedrockInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.action_group_handler.function_name
+  function_name = aws_lambda_function.code_generator.function_name
+  principal     = "bedrock.amazonaws.com"
+  source_arn    = aws_bedrockagent_agent.iac_agent.agent_arn
+}
+
+# Action Group: ValidateIaC → validator Lambda
+resource "aws_bedrockagent_agent_action_group" "validate_iac" {
+  agent_id                   = aws_bedrockagent_agent.iac_agent.id
+  agent_version              = "DRAFT"
+  action_group_name          = "ValidateIaC"
+  skip_resource_in_use_check = true
+  action_group_executor {
+    lambda = aws_lambda_function.validator.arn
+  }
+  api_schema {
+    payload = file("${path.module}/../bedrock/validate_iac_schema.json")
+  }
+}
+
+resource "aws_lambda_permission" "bedrock_invoke_validator" {
+  statement_id  = "AllowBedrockInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.validator.function_name
+  principal     = "bedrock.amazonaws.com"
+  source_arn    = aws_bedrockagent_agent.iac_agent.agent_arn
+}
+
+# Action Group: ScanIaC → security_scanner Lambda
+resource "aws_bedrockagent_agent_action_group" "scan_iac" {
+  agent_id                   = aws_bedrockagent_agent.iac_agent.id
+  agent_version              = "DRAFT"
+  action_group_name          = "ScanIaC"
+  skip_resource_in_use_check = true
+  action_group_executor {
+    lambda = aws_lambda_function.security_scanner.arn
+  }
+  api_schema {
+    payload = file("${path.module}/../bedrock/scan_iac_schema.json")
+  }
+}
+
+resource "aws_lambda_permission" "bedrock_invoke_scanner" {
+  statement_id  = "AllowBedrockInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.security_scanner.function_name
+  principal     = "bedrock.amazonaws.com"
+  source_arn    = aws_bedrockagent_agent.iac_agent.agent_arn
+}
+
+# Action Group: UploadIaC → artifact_uploader Lambda
+resource "aws_bedrockagent_agent_action_group" "upload_iac" {
+  agent_id                   = aws_bedrockagent_agent.iac_agent.id
+  agent_version              = "DRAFT"
+  action_group_name          = "UploadIaC"
+  skip_resource_in_use_check = true
+  action_group_executor {
+    lambda = aws_lambda_function.artifact_uploader.arn
+  }
+  api_schema {
+    payload = file("${path.module}/../bedrock/upload_iac_schema.json")
+  }
+}
+
+resource "aws_lambda_permission" "bedrock_invoke_uploader" {
+  statement_id  = "AllowBedrockInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.artifact_uploader.function_name
   principal     = "bedrock.amazonaws.com"
   source_arn    = aws_bedrockagent_agent.iac_agent.agent_arn
 }
 
 # CloudWatch Log Groups
-resource "aws_cloudwatch_log_group" "step_functions" {
-  name              = "/aws/stepfunctions/${var.project_name}-iac-generator"
-  retention_in_days = var.log_retention_days
-}
-
 resource "aws_cloudwatch_log_group" "lambda_generator" {
   name              = "/aws/lambda/${var.project_name}-code-generator"
   retention_in_days = var.log_retention_days
@@ -321,10 +268,5 @@ resource "aws_cloudwatch_log_group" "lambda_scanner" {
 
 resource "aws_cloudwatch_log_group" "lambda_uploader" {
   name              = "/aws/lambda/${var.project_name}-artifact-uploader"
-  retention_in_days = var.log_retention_days
-}
-
-resource "aws_cloudwatch_log_group" "lambda_action_group" {
-  name              = "/aws/lambda/${var.project_name}-action-group-handler"
   retention_in_days = var.log_retention_days
 }
