@@ -1,7 +1,11 @@
 import json
+import logging
 import boto3
 import os
 import re
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 def lambda_handler(event, context, bedrock_client=None):
@@ -26,6 +30,13 @@ def lambda_handler(event, context, bedrock_client=None):
             "messages": [{"role": "user", "content": prompt}],
         }
     )
+
+    logger.info(json.dumps({
+        "message": "invoking_model",
+        "model_id": model_id,
+        "retry_count": retry_count,
+        "regenerating": bool(validation_errors),
+    }))
 
     response = bedrock.invoke_model(modelId=model_id, body=body)
     result = json.loads(response["body"].read())

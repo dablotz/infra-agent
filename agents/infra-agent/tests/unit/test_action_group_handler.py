@@ -26,6 +26,7 @@ _spec.loader.exec_module(_mod)
 
 lambda_handler = _mod.lambda_handler
 MAX_REQUEST_LENGTH = _mod.MAX_REQUEST_LENGTH
+VALID_IAC_TYPES = _mod.VALID_IAC_TYPES
 
 # ---------------------------------------------------------------------------
 # Constants / helpers
@@ -246,6 +247,28 @@ def test_oversized_user_request_returns_400(lambda_context, sfn_mock):
     result = lambda_handler(event, lambda_context, sfn_client=sfn_mock)
 
     assert result["response"]["httpStatusCode"] == 400
+    sfn_mock.start_execution.assert_not_called()
+
+
+def test_invalid_iac_type_returns_400(lambda_context, sfn_mock):
+    event = {
+        **BASE_EVENT,
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "properties": [
+                        {"name": "user_request", "type": "string", "value": "Create an S3 bucket"},
+                        {"name": "iac_type", "type": "string", "value": "pulumi"},
+                    ]
+                }
+            }
+        },
+    }
+    result = lambda_handler(event, lambda_context, sfn_client=sfn_mock)
+
+    assert result["response"]["httpStatusCode"] == 400
+    body = json.loads(result["response"]["responseBody"]["application/json"]["body"])
+    assert "iac_type" in body["error"]
     sfn_mock.start_execution.assert_not_called()
 
 

@@ -1,11 +1,16 @@
 import json
+import logging
 import time
 import boto3
 import os
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
 MAX_REQUEST_LENGTH = 4096
 POLL_INTERVAL_SECONDS = 5
 TERMINAL_STATES = {"SUCCEEDED", "FAILED", "TIMED_OUT", "ABORTED"}
+VALID_IAC_TYPES = {"terraform", "cloudformation", "cdk"}
 
 
 def lambda_handler(event, context, sfn_client=None):
@@ -42,6 +47,20 @@ def lambda_handler(event, context, sfn_client=None):
             f"user_request exceeds maximum length of {MAX_REQUEST_LENGTH} characters",
         )
 
+    if iac_type not in VALID_IAC_TYPES:
+        return _error_response(
+            action_group,
+            api_path,
+            400,
+            f"iac_type must be one of: {', '.join(sorted(VALID_IAC_TYPES))}",
+        )
+
+    logger.info(json.dumps({
+        "message": "pipeline_starting",
+        "iac_type": iac_type,
+        "user_request_length": len(user_request),
+    }))
+
     execution_input = {
         "user_request": user_request,
         "iac_type": iac_type,
@@ -53,6 +72,7 @@ def lambda_handler(event, context, sfn_client=None):
         input=json.dumps(execution_input),
     )
     execution_arn = response["executionArn"]
+    logger.info(json.dumps({"message": "execution_started", "execution_arn": execution_arn}))
 
     while True:
         status_response = sfn.describe_execution(executionArn=execution_arn)
@@ -60,6 +80,11 @@ def lambda_handler(event, context, sfn_client=None):
 
         if status == "SUCCEEDED":
             output = json.loads(status_response["output"])
+            logger.info(json.dumps({
+                "message": "pipeline_succeeded",
+                "execution_arn": execution_arn,
+                "s3_uri": output.get("s3_uri"),
+            }))
             return {
                 "messageVersion": "1.0",
                 "response": {
@@ -87,6 +112,12 @@ def lambda_handler(event, context, sfn_client=None):
 
         if status in ("FAILED", "TIMED_OUT", "ABORTED"):
             cause = status_response.get("cause", "Unknown error")
+            logger.error(json.dumps({
+                "message": "pipeline_failed",
+                "execution_arn": execution_arn,
+                "status": status,
+                "cause": cause,
+            }))
             return _error_response(
                 action_group, api_path, 500, f"Pipeline {status.lower()}: {cause}"
             )

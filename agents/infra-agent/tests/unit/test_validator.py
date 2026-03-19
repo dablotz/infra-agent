@@ -180,3 +180,33 @@ def test_tflint_clean_does_not_add_errors(mock_run, lambda_context):
 
     assert result["validation_status"] == "passed"
     assert result["validation_errors"] == []
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure failures raise RuntimeError
+# ---------------------------------------------------------------------------
+
+
+@patch("subprocess.run")
+def test_terraform_binary_missing_raises_runtime_error(mock_run, lambda_context):
+    mock_run.side_effect = FileNotFoundError("No such file: /opt/bin/terraform")
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        lambda_handler(BASE_EVENT, lambda_context)
+
+
+@patch("subprocess.run")
+def test_terraform_init_timeout_raises_runtime_error(mock_run, lambda_context):
+    mock_run.side_effect = subprocess.TimeoutExpired(cmd="/opt/bin/terraform", timeout=60)
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        lambda_handler(BASE_EVENT, lambda_context)
+
+
+@patch("subprocess.run")
+def test_tflint_binary_missing_raises_runtime_error(mock_run, lambda_context):
+    mock_run.side_effect = [
+        _OK,  # terraform init
+        _OK,  # terraform validate
+        FileNotFoundError("No such file: /opt/bin/tflint"),
+    ]
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        lambda_handler(BASE_EVENT, lambda_context)

@@ -1,12 +1,18 @@
 import json
+import logging
 import subprocess
 import tempfile
 import os
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 def lambda_handler(event, context):
     generated_code = event.get("generated_code", "")
     iac_type = event.get("iac_type", "terraform")
+
+    logger.info(json.dumps({"message": "security_scan_started", "iac_type": iac_type}))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         file_ext = ".tf" if iac_type == "terraform" else ".yaml"
@@ -16,9 +22,15 @@ def lambda_handler(event, context):
 
         findings = _run_checkov(tmpdir)
 
+    status = "passed" if not findings else "warnings"
+    logger.info(json.dumps({
+        "message": "security_scan_complete",
+        "status": status,
+        "finding_count": len(findings),
+    }))
     return {
         **event,
-        "security_status": "passed" if not findings else "warnings",
+        "security_status": status,
         "security_findings": findings,
     }
 
@@ -53,8 +65,8 @@ def _run_checkov(directory: str) -> list:
 
     try:
         output = json.loads(result.stdout.decode())
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Security scan infrastructure failure: checkov output unparseable: {e}") from e
 
     findings = []
     for check_result in output.get("results", {}).get("failed_checks", []):

@@ -155,8 +155,7 @@ def test_run_checkov_returns_findings_list(mock_run):
 
 
 @patch("subprocess.run")
-def test_run_checkov_handles_invalid_json_gracefully(mock_run):
+def test_run_checkov_raises_on_unparseable_output(mock_run):
     mock_run.return_value = MagicMock(stdout=b"not valid json", returncode=1)
-    findings = _run_checkov("/tmp/test")
-
-    assert findings == []
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        _run_checkov("/tmp/test")

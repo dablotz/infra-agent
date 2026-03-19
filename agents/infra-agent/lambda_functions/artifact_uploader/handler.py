@@ -1,8 +1,12 @@
 import json
+import logging
 import boto3
 import os
 from datetime import datetime, timezone
 import uuid
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 def lambda_handler(event, context, s3_client=None):
@@ -41,6 +45,14 @@ def lambda_handler(event, context, s3_client=None):
         Body=json.dumps(event, indent=2).encode("utf-8"),
         ContentType="application/json",
     )
+
+    logger.info(json.dumps({
+        "message": "artifact_uploaded",
+        "request_id": request_id,
+        "s3_uri": f"s3://{bucket}/{key}",
+        "validation_status": event.get("validation_status"),
+        "security_status": event.get("security_status"),
+    }))
 
     return {
         **event,
