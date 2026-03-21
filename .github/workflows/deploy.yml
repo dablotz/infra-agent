@@ -19,9 +19,9 @@ jobs:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -41,15 +41,15 @@ jobs:
       alias_id: ${{ steps.outputs.outputs.alias_id }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -59,7 +59,7 @@ jobs:
           pip install -r cdk/requirements-cdk.txt
 
       - name: Install Node.js (required by CDK CLI)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -74,8 +74,12 @@ jobs:
       - name: Deploy shared infrastructure
         run: |
           cd cdk
+          # create_github_oidc_provider=false — if GHA is running, the OIDC provider
+          # already exists (it was used to authenticate this job). SharedStack still
+          # manages the CI role and its trust policy; only the provider is skipped.
           cdk deploy SharedStack --require-approval never \
-            -c github_repo=${{ vars.GH_REPO }}
+            -c github_repo=${{ vars.GH_REPO }} \
+            -c create_github_oidc_provider=false
 
       - name: Deploy infra-agent
         run: |

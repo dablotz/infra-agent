@@ -138,3 +138,10 @@ class SharedStack(Stack):
         cdk.CfnOutput(self, "ArtifactBucket", value=artifact_bucket.bucket_name)
         cdk.CfnOutput(self, "LayersBucket", value=layers_bucket.bucket_name)
         cdk.CfnOutput(self, "EventBusArn", value=event_bus.event_bus_arn)
+        if github_repo:
+            cdk.CfnOutput(
+                self,
+                "CiDeployRoleArn",
+                value=ci_role.role_arn,
+                description="Set this as the AWS_DEPLOY_ROLE_ARN secret in GitHub",
+            )
