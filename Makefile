@@ -1,4 +1,4 @@
-.PHONY: all deploy-shared deploy-infra deploy-orchestrator deploy-docs destroy-all clean help docker-build docker-run
+.PHONY: all deploy-shared package-layers deploy-infra deploy-orchestrator deploy-docs destroy-all clean help docker-build docker-run
 
 help:
 	@echo "Multi-Agent System Deployment"
@@ -8,6 +8,7 @@ help:
 	@echo "  docker-run         - Run Docker container"
 	@echo "  all                - Deploy everything (shared + all agents)"
 	@echo "  deploy-shared      - Deploy shared infrastructure"
+	@echo "  package-layers     - Build Lambda layers (run inside Docker for Linux binaries)"
 	@echo "  deploy-infra       - Deploy infra-agent"
 	@echo "  deploy-orchestrator - Deploy orchestrator agent"
 	@echo "  deploy-docs        - Deploy docs agent"
@@ -23,32 +24,41 @@ docker-run:
 	@docker-compose up -d
 	@docker-compose exec iac-agent bash
 
-all: deploy-shared deploy-infra
+all: deploy-shared deploy-infra deploy-orchestrator
 
 deploy-shared:
 	@echo "Deploying shared infrastructure..."
 	@cd shared/terraform && terraform init && terraform apply -auto-approve
+
+package-layers:
+	@echo "Building Lambda layers (run inside Docker for Linux-compatible binaries)..."
+	@cd agents/infra-agent && $(MAKE) build-layers
 
 deploy-infra: deploy-shared
 	@echo "Deploying infra-agent..."
 	@export LAYERS_BUCKET=$$(cd shared/terraform && terraform output -raw lambda_layers_bucket) && \
 		cd agents/infra-agent && $(MAKE) all
 
-deploy-orchestrator:
-	@echo "Orchestrator agent not yet implemented"
+deploy-orchestrator: deploy-infra
+	@echo "Deploying orchestrator..."
+	@export INFRA_AGENT_ID=$$(cd agents/infra-agent/terraform && terraform output -raw agent_id) && \
+		cd agents/orchestrator && $(MAKE) deploy INFRA_AGENT_ID=$$INFRA_AGENT_ID
 
 deploy-docs:
 	@echo "Docs agent not yet implemented"
 
 destroy-all:
 	@echo "Destroying all infrastructure..."
+	@cd agents/orchestrator/terraform && terraform destroy -auto-approve || true
 	@cd agents/infra-agent/terraform && terraform destroy -auto-approve || true
 	@cd shared/terraform && terraform destroy -auto-approve
 
 clean:
 	@echo "Cleaning generated files..."
 	@cd agents/infra-agent && $(MAKE) clean || true
+	@cd agents/orchestrator && $(MAKE) clean || true
 	@rm -rf shared/lambda_layers/terraform_tools shared/lambda_layers/security_tools
 	@rm -f shared/lambda_layers/*.zip
 	@rm -rf shared/terraform/.terraform shared/terraform/.terraform.lock.hcl
 	@rm -rf agents/infra-agent/terraform/.terraform agents/infra-agent/terraform/.terraform.lock.hcl
+	@rm -rf agents/orchestrator/terraform/.terraform agents/orchestrator/terraform/.terraform.lock.hcl
