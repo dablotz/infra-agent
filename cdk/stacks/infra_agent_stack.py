@@ -493,17 +493,11 @@ class InfraAgentStack(Stack):
                 source_arn=cfn_agent.attr_agent_arn,
             )
 
-        # Production alias — routing_configuration intentionally omitted.
-        # When omitted, CloudFormation automatically creates a numbered agent
-        # version from DRAFT and routes the alias to it. This sidesteps the
-        # boto3 gap (no create_agent_version API) and the CloudFormation gap
-        # (AWS::Bedrock::AgentVersion not available in all regions).
-        production_alias = bedrock.CfnAgentAlias(
-            self,
-            "ProductionAlias",
-            agent_id=cfn_agent.attr_agent_id,
-            agent_alias_name="production",
-        )
+        # The production alias is intentionally NOT managed by CDK.
+        # CDK deploys only update the DRAFT version. After integration tests
+        # pass against TSTALIASID (DRAFT), scripts/promote_agent.py creates a
+        # numbered version and updates the production alias. This ensures
+        # production is only ever promoted to a tested version.
 
         # SSM parameters — read by OrchestratorStack and the deploy workflow.
         ssm.StringParameter(
@@ -512,13 +506,7 @@ class InfraAgentStack(Stack):
             parameter_name=f"/{project_name}/infra-agent/agent-id",
             string_value=cfn_agent.attr_agent_id,
         )
-        ssm.StringParameter(
-            self,
-            "AliasIdParam",
-            parameter_name=f"/{project_name}/infra-agent/alias-id",
-            string_value=production_alias.attr_agent_alias_id,
-        )
+        # alias-id is written by scripts/promote_agent.py after integration tests pass.
 
         cdk.CfnOutput(self, "AgentId", value=cfn_agent.attr_agent_id)
         cdk.CfnOutput(self, "AgentArn", value=cfn_agent.attr_agent_arn)
-        cdk.CfnOutput(self, "AliasId", value=production_alias.attr_agent_alias_id)

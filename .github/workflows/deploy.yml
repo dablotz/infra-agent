@@ -31,14 +31,16 @@ jobs:
       - name: Run tests
         run: cd agents/infra-agent && make test
 
+  # Deploys SharedStack and InfraAgentStack, updating only the DRAFT version.
+  # The production alias is NOT touched here — promotion happens only after
+  # integration tests pass (see the promote job below).
   deploy:
-    name: Deploy
+    name: Deploy Draft
     needs: unit-tests
     runs-on: ubuntu-latest
 
     outputs:
       agent_id: ${{ steps.outputs.outputs.agent_id }}
-      alias_id: ${{ steps.outputs.outputs.alias_id }}
 
     steps:
       - uses: actions/checkout@v6
@@ -81,13 +83,13 @@ jobs:
             -c github_repo=${{ vars.GH_REPO }} \
             -c create_github_oidc_provider=false
 
-      - name: Deploy infra-agent
+      - name: Deploy infra-agent (DRAFT)
         run: |
           cd cdk
           cdk deploy InfraAgentStack --require-approval never \
             --outputs-file /tmp/infra-outputs.json
 
-      - name: Capture stack outputs
+      - name: Capture agent ID
         id: outputs
         run: |
           python3 - <<'EOF'
@@ -95,26 +97,95 @@ jobs:
           d = json.load(open('/tmp/infra-outputs.json'))['InfraAgentStack']
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"agent_id={d['AgentId']}\n")
-              f.write(f"alias_id={d['AliasId']}\n")
           EOF
 
-      # Post-deployment health check. CloudFormation handles rollback if the
-      # stack update itself fails; this catches issues at the application level
-      # and blocks the orchestrator deploy if the agent is not responding.
-      - name: Smoke test
+  # Runs integration tests against TSTALIASID (DRAFT). All four action groups
+  # must fire and produce an S3 artifact for a test to pass. If any test fails,
+  # the promote job is skipped and production stays on the previous version.
+  integration-tests:
+    name: Integration Tests
+    needs: deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run integration tests
         run: |
-          python scripts/smoke_test.py \
-            --agent-id "${{ steps.outputs.outputs.agent_id }}" \
+          python scripts/integration_test.py \
+            --agent-id "${{ needs.deploy.outputs.agent_id }}" \
             --alias-id TSTALIASID \
+            --region "${{ env.AWS_REGION }}"
+
+  # Promotes the tested DRAFT to a numbered production version, then deploys
+  # the orchestrator pointing at the new alias. Only runs if integration tests
+  # pass — if tests fail this job is skipped and production is unchanged.
+  promote:
+    name: Promote & Deploy Orchestrator
+    needs: integration-tests
+    runs-on: ubuntu-latest
+
+    outputs:
+      alias_id: ${{ steps.promote.outputs.alias_id }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r cdk/requirements-cdk.txt
+
+      - name: Install Node.js (required by CDK CLI)
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Install CDK CLI
+        run: npm install -g aws-cdk
+
+      - name: Promote infra-agent to production
+        id: promote
+        run: |
+          python scripts/promote_agent.py \
+            --agent-id "${{ needs.deploy.outputs.agent_id }}" \
+            --alias-name production \
             --region "${{ env.AWS_REGION }}"
 
       - name: Deploy orchestrator
         run: |
+          # alias-id written to SSM by promote_agent.py
+          ALIAS_ID=$(aws ssm get-parameter \
+            --name "/multi-agent-system/infra-agent/alias-id" \
+            --query "Parameter.Value" --output text)
           cd cdk
           cdk deploy OrchestratorStack --require-approval never \
             --outputs-file /tmp/orchestrator-outputs.json \
-            -c infra_agent_id="${{ steps.outputs.outputs.agent_id }}" \
-            -c infra_agent_alias_id="${{ steps.outputs.outputs.alias_id }}"
+            -c infra_agent_id="${{ needs.deploy.outputs.agent_id }}" \
+            -c infra_agent_alias_id="$ALIAS_ID"
 
       - name: Register collaborator and prepare orchestrator
         run: |
@@ -129,7 +200,7 @@ jobs:
 
   summary:
     name: Deployment Summary
-    needs: deploy
+    needs: [deploy, promote]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -139,4 +210,6 @@ jobs:
           echo "| | |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Agent ID | ${{ needs.deploy.outputs.agent_id }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Alias ID | ${{ needs.deploy.outputs.alias_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Alias ID | ${{ needs.promote.outputs.alias_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deploy | ${{ needs.deploy.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Promote | ${{ needs.promote.result }} |" >> "$GITHUB_STEP_SUMMARY"
