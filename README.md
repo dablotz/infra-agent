@@ -77,6 +77,16 @@ make all
 
 ## Deployment
 
+### Step 0 — Bootstrap remote state (once only)
+
+Creates the S3 bucket and DynamoDB table used as the Terraform remote backend, then writes the connection details to `.terraform-backend`. All subsequent `make` targets read that file automatically — no manual environment setup needed.
+
+```bash
+make bootstrap
+```
+
+The command prints the `TF_STATE_BUCKET` and `TF_LOCK_TABLE` values at the end. Copy these into GitHub repository secrets for CI (see the CI/CD section below).
+
 ### Step 1 — Shared infrastructure
 
 Creates the S3 buckets for Lambda layers and agent artifacts, and an EventBridge bus for future inter-agent communication.
@@ -101,7 +111,7 @@ Packages the Lambda functions, deploys Terraform, and prepares the Bedrock agent
 make deploy-infra
 ```
 
-`make all` runs all three steps in sequence.
+`make all` runs steps 1–3 in sequence.
 
 ### Get the agent ID after deployment
 
@@ -110,6 +120,54 @@ cd agents/infra-agent/terraform && terraform output agent_id
 ```
 
 Test the agent at **AWS Bedrock console → Agents → infra-agent**.
+
+## CI / CD
+
+GitHub Actions workflows run automatically on pull requests and merges to main.
+
+### PR Checks (no AWS credentials required)
+
+On every pull request:
+- **Unit tests** — all Lambda handler tests via pytest
+- **Terraform validate** — syntax and schema validation across all modules
+- **Checkov scan** — static security analysis of Terraform
+
+### Deploy Pipeline (merge to main)
+
+Merging to main triggers a full deploy and blue/green promotion:
+
+```
+merge → unit tests → terraform apply → smoke test → promote → summary
+```
+
+The promotion step (`scripts/promote_agent.py`) creates a numbered Bedrock agent version from the newly deployed DRAFT, then shifts the `production` alias to it. The smoke test runs against `TSTALIASID` (DRAFT) before the alias is touched — so production traffic is unaffected by a failed deploy.
+
+**Rollback** is instant: the production alias is not updated until the smoke test passes, so reverting is as simple as reverting the commit.
+
+### One-time setup
+
+1. Run `make bootstrap` and copy the `TF_STATE_BUCKET` and `TF_LOCK_TABLE` outputs.
+
+2. Deploy shared infrastructure with your `github_repo` variable set to create the OIDC role:
+   ```bash
+   cd shared/terraform && terraform apply -var="github_repo=owner/repo-name"
+   ```
+
+3. Copy the `ci_deploy_role_arn` output.
+
+4. Add these **GitHub repository secrets** (`Settings → Secrets → Actions`):
+
+   | Secret | Value |
+   |---|---|
+   | `AWS_DEPLOY_ROLE_ARN` | `ci_deploy_role_arn` output from step 3 |
+   | `TF_STATE_BUCKET` | `state_bucket` output from bootstrap |
+   | `TF_LOCK_TABLE` | `lock_table` output from bootstrap |
+
+5. Add this **GitHub repository variable** (`Settings → Variables → Actions`):
+
+   | Variable | Value |
+   |---|---|
+   | `GITHUB_REPO` | `owner/repo-name` (your GitHub repository) |
 
 ## Running Tests
 
@@ -153,6 +211,7 @@ See [docs/post-mortem.md](docs/post-mortem.md) for root cause analysis of issues
 ## Roadmap
 
 - **Docs-Agent** — receives IaC artifacts via EventBridge and generates human-readable documentation
+- **Existing IaC RAG lookup** — index an existing codebase into a Bedrock Knowledge Base so the infra-agent can reference established patterns and resource naming conventions when generating new code, producing output that fits the style of existing infrastructure. Deferred due to cost: the required vector store (OpenSearch Serverless or Aurora pgvector) and a Git→S3 sync pipeline are disproportionate for a portfolio deployment. A separate project will explore the data ingestion pipeline independently. See [docs/post-mortem.md](docs/post-mortem.md) for the architectural analysis.
 
 ## Cost Estimate
 

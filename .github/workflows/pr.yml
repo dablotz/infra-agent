@@ -1,0 +1,72 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: cd agents/infra-agent && make test
+
+  cdk-synth:
+    name: CDK Synth
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r cdk/requirements-cdk.txt
+
+      - name: Install Node.js (required by CDK CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install CDK CLI
+        run: npm install -g aws-cdk
+
+      # cdk synth validates that all stacks synthesize without errors.
+      # --no-lookups prevents SSM/context lookups that need AWS credentials.
+      # The OrchestratorStack requires infra_agent_id and infra_agent_alias_id
+      # context values — pass stubs so synth succeeds on PRs.
+      - name: Synth all stacks
+        run: |
+          cd cdk
+          cdk synth --no-lookups \
+            -c infra_agent_id=placeholder \
+            -c infra_agent_alias_id=placeholder
+
+  security-scan:
+    name: CDK Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkov CDK scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: cdk
+          framework: cloudformation
+          # soft_fail keeps the PR unblocked on findings while still surfacing them.
+          # Harden to soft_fail: false once baseline suppressions are in place.
+          soft_fail: true
+          output_format: cli

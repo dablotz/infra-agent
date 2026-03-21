@@ -1,13 +1,7 @@
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-.terraform.lock.hcl
-**/terraform/.terraform/
-**/terraform/*.tfstate
-**/terraform/*.tfstate.*
-**/terraform/.terraform.lock.hcl
-**/terraform/*.tfvars
+# CDK
+cdk.out/
+cdk/cdk.out/
+cdk.context.json
 
 # Lambda packages
 lambda_functions/*.zip
@@ -25,6 +19,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.venv/
 venv/
 env/
 **/.pytest_cache
