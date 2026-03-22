@@ -35,15 +35,10 @@ RUN wget -q https://github.com/terraform-linters/tflint/releases/download/v${TFL
     mv tflint /usr/local/bin/ && \
     rm tflint_linux_amd64.zip
 
-COPY . .
-
-RUN chmod +x shared/scripts/*.sh docker-entrypoint.sh 2>/dev/null || true
-
 ENV AWS_DEFAULT_REGION=us-east-1
 
 RUN groupadd -r buildgroup && useradd -r -m -g buildgroup builder && \
     chown -R builder:buildgroup /workspace
 USER builder
 
-ENTRYPOINT ["/workspace/docker-entrypoint.sh"]
 CMD ["/bin/bash"]

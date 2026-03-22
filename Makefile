@@ -2,8 +2,18 @@
         destroy-all clean help docker-build docker-run venv
 # Lambda function packaging is handled by CDK (Code.from_asset on handler dirs).
 
-AWS_REGION ?= us-east-1
-CDK         = cd cdk && cdk
+AWS_REGION   ?= us-east-1
+CDK           = cd cdk && cdk
+DOCKER_IMAGE  = iac-agent-build
+# Flags shared between package-layers and docker-run.
+# The repo is mounted at /workspace so layer zips land back on the host.
+DOCKER_RUN    = docker run --rm --platform linux/amd64 \
+                  -v "$(PWD):/workspace" \
+                  -e AWS_ACCESS_KEY_ID \
+                  -e AWS_SECRET_ACCESS_KEY \
+                  -e AWS_SESSION_TOKEN \
+                  -e AWS_REGION \
+                  $(DOCKER_IMAGE)
 
 help:
 	@echo "Multi-Agent System Deployment"
@@ -36,17 +46,23 @@ venv:
 
 docker-build:
 	@echo "Building Docker image..."
-	@docker-compose build
+	@docker build --platform linux/amd64 -t $(DOCKER_IMAGE) .
 
 docker-run:
 	@echo "Starting Docker container (interactive)..."
-	@docker-compose run --rm iac-agent bash
+	@docker run --rm -it --platform linux/amd64 \
+		-v "$(PWD):/workspace" \
+		-e AWS_ACCESS_KEY_ID \
+		-e AWS_SECRET_ACCESS_KEY \
+		-e AWS_SESSION_TOKEN \
+		-e AWS_REGION \
+		$(DOCKER_IMAGE) bash
 
 # Builds Linux-compatible layer zips by delegating to the Docker container.
 # The repo is mounted at /workspace so the zips land back on the host.
 package-layers: docker-build
 	@echo "Building Lambda layers inside Docker..."
-	@docker-compose run --rm iac-agent make -C agents/infra-agent build-layers
+	@$(DOCKER_RUN) make -C agents/infra-agent build-layers
 
 all: package-layers deploy-shared deploy-infra promote-infra deploy-orchestrator
 
