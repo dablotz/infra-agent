@@ -23,151 +23,167 @@ Accepts a natural language infrastructure description and produces Terraform, Cl
 ## Project Structure
 
 ```
+├── .github/workflows/
+│   ├── deploy.yml             # Push-to-main: draft deploy → integration tests → promote
+│   └── pr.yml                 # PR: unit tests, CDK synth, Checkov scan
 ├── agents/
 │   ├── infra-agent/
 │   │   ├── bedrock/           # Agent instructions and 4 OpenAPI action group schemas
 │   │   ├── lambda_functions/  # Pipeline Lambda handlers (one per action group)
-│   │   ├── terraform/         # Agent infrastructure (IAM, Bedrock, Guardrails)
 │   │   └── tests/             # Unit tests (57 tests, no AWS account required)
 │   └── orchestrator/
-│       ├── bedrock/           # Supervisor agent instructions
-│       └── terraform/         # Orchestrator agent + collaborator registration
-├── shared/
-│   ├── terraform/             # Shared S3 buckets, EventBridge bus, Lambda layers bucket
-│   ├── lambda_layers/         # Built Lambda layers (terraform-tools, security-tools)
-│   └── scripts/               # Layer build scripts
+│       └── bedrock/           # Supervisor agent instructions
+├── cdk/
+│   ├── app.py                 # CDK app — SharedStack, InfraAgentStack, OrchestratorStack
+│   ├── stacks/                # CDK stack definitions
+│   └── requirements-cdk.txt
 ├── docs/
 │   ├── runbook.md             # Deployment, operations, and troubleshooting guide
 │   └── post-mortem.md         # Root cause analysis and architecture decisions
-├── Dockerfile                 # Build environment (terraform, tflint, checkov, awscli)
-├── docker-compose.yml         # Local development container
-└── Makefile                   # Top-level deployment targets
+├── scripts/
+│   ├── smoke_test.py          # Quick agent invocation check (local dev)
+│   ├── integration_test.py    # Full pipeline integration tests (CI gate)
+│   ├── promote_agent.py       # Promotes staging version to production alias
+│   └── setup_orchestrator.py # Registers infra-agent collaborator on orchestrator
+├── shared/
+│   ├── lambda_layers/         # Built Lambda layers (terraform-tools, security-tools)
+│   └── scripts/               # Layer build scripts
+├── docker-compose.yml         # Local dev container for building Linux-compatible layers
+├── Makefile                   # Top-level deployment targets
+└── requirements.txt
 ```
 
 ## Prerequisites
 
-- Docker and Docker Compose (recommended for builds)
-- AWS CLI configured with credentials that have permissions for: Bedrock, Lambda, S3, IAM, CloudWatch
-- Terraform >= 1.14
-- Python 3.12+ (for running tests locally)
+- Docker and Docker Compose (for building Linux-compatible Lambda layers locally)
+- AWS CLI configured with credentials for: Bedrock, Lambda, S3, IAM, SSM, CloudWatch
+- Node.js 20+ and `npm install -g aws-cdk` (for CDK CLI)
+- Python 3.12+ with a virtual environment (`make venv`)
 - Amazon Bedrock model access enabled for **Claude Sonnet 4.5** (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`) — enable at **Bedrock console → Model access**
 
 ## Quick Start
 
-### Using Docker (recommended)
-
-The container includes all required build tools (terraform, tflint, checkov, awscli).
-
 ```bash
-# Build and start the container
-docker-compose up -d
+# Set up Python environment
+make venv
+source .venv/bin/activate
 
-# Open a shell inside the container
-docker-compose exec iac-agent bash
+# Build Linux-compatible Lambda layers (requires Docker)
+make package-layers
 
-# Inside the container: deploy everything
-make all
+# Deploy everything (replace with your GitHub repo)
+make all GH_REPO=owner/repo-name
 ```
 
-### Local
-
-```bash
-make all
-```
+`make all` runs: `package-layers → deploy-shared → deploy-infra → promote-infra → deploy-orchestrator`
 
 ## Deployment
 
-### Step 0 — Bootstrap remote state (once only)
-
-Creates the S3 bucket and DynamoDB table used as the Terraform remote backend, then writes the connection details to `.terraform-backend`. All subsequent `make` targets read that file automatically — no manual environment setup needed.
-
-```bash
-make bootstrap
-```
-
-The command prints the `TF_STATE_BUCKET` and `TF_LOCK_TABLE` values at the end. Copy these into GitHub repository secrets for CI (see the CI/CD section below).
-
 ### Step 1 — Shared infrastructure
 
-Creates the S3 buckets for Lambda layers and agent artifacts, and an EventBridge bus for future inter-agent communication.
+Creates S3 buckets, an EventBridge bus, a GitHub Actions OIDC provider, and a CI deploy role. Pass `GH_REPO` on the first run to set up GitHub OIDC.
 
 ```bash
-make deploy-shared
+make deploy-shared GH_REPO=owner/repo-name
 ```
+
+If the OIDC provider already exists in your account (created manually or by a prior run), skip creating a duplicate:
+
+```bash
+cd cdk && cdk deploy SharedStack --require-approval never \
+  -c github_repo=owner/repo-name \
+  -c create_github_oidc_provider=false
+```
+
+Copy the `CiDeployRoleArn` output — you will need it for CI setup.
 
 ### Step 2 — Build Lambda layers
 
 Lambda layers contain the terraform, tflint, and checkov binaries. Build inside Docker to get Linux-compatible binaries.
 
 ```bash
-docker-compose exec iac-agent make package-layers
+make package-layers
 ```
 
-### Step 3 — Deploy the agent
+### Step 3 — Deploy the infra-agent
 
-Packages the Lambda functions, deploys Terraform, and prepares the Bedrock agent.
+Packages Lambda functions, deploys CDK, creates a staging alias (with a new numbered version), and runs a smoke test.
 
 ```bash
 make deploy-infra
 ```
 
-`make all` runs steps 1–3 in sequence.
+### Step 4 — Promote to production
 
-### Get the agent ID after deployment
+Reads the version from the staging alias and updates the production alias to point to it.
 
 ```bash
-cd agents/infra-agent/terraform && terraform output agent_id
+make promote-infra
 ```
 
-Test the agent at **AWS Bedrock console → Agents → infra-agent**.
+### Step 5 — Deploy the orchestrator
+
+Reads the production alias from SSM and deploys the orchestrator agent, then registers the infra-agent as a collaborator.
+
+```bash
+make deploy-orchestrator
+```
+
+### Get the agent IDs after deployment
+
+```bash
+aws ssm get-parameter --name "/multi-agent-system/infra-agent/agent-id" --query "Parameter.Value" --output text
+aws ssm get-parameter --name "/multi-agent-system/infra-agent/alias-id" --query "Parameter.Value" --output text
+```
+
+Test the agents at **AWS Bedrock console → Agents**.
 
 ## CI / CD
 
-GitHub Actions workflows run automatically on pull requests and merges to main.
+GitHub Actions workflows run automatically on pull requests and pushes to main.
 
-### PR Checks (no AWS credentials required)
+### PR Checks (`pr.yml`)
 
 On every pull request:
-- **Unit tests** — all Lambda handler tests via pytest
-- **Terraform validate** — syntax and schema validation across all modules
-- **Checkov scan** — static security analysis of Terraform
+- **Unit tests** — all Lambda handler tests via pytest (no AWS credentials required)
+- **CDK synth** — synthesizes all stacks to catch configuration errors before deploy
+- **Checkov scan** — static security analysis of the synthesized CloudFormation templates
 
-### Deploy Pipeline (merge to main)
+### Deploy Pipeline (`deploy.yml`)
 
-Merging to main triggers a full deploy and blue/green promotion:
+Pushing to main triggers a staged deploy with an integration test gate:
 
 ```
-merge → unit tests → terraform apply → smoke test → promote → summary
+push to main
+  → unit tests
+  → deploy draft        (CDK deploys DRAFT + creates staging alias with new version)
+  → integration tests   (3 end-to-end tests against staging alias — must all pass)
+  → promote             (staging version → production alias, then orchestrator deploy)
+  → summary
 ```
 
-The promotion step (`scripts/promote_agent.py`) creates a numbered Bedrock agent version from the newly deployed DRAFT, then shifts the `production` alias to it. The smoke test runs against `TSTALIASID` (DRAFT) before the alias is touched — so production traffic is unaffected by a failed deploy.
+If integration tests fail, the promote job is skipped. The production alias stays on the last good version — no rollback needed.
 
-**Rollback** is instant: the production alias is not updated until the smoke test passes, so reverting is as simple as reverting the commit.
+### One-time CI setup
 
-### One-time setup
-
-1. Run `make bootstrap` and copy the `TF_STATE_BUCKET` and `TF_LOCK_TABLE` outputs.
-
-2. Deploy shared infrastructure with your `github_repo` variable set to create the OIDC role:
+1. Deploy SharedStack locally with `GH_REPO` set to create the OIDC provider and CI role:
    ```bash
-   cd shared/terraform && terraform apply -var="github_repo=owner/repo-name"
+   make deploy-shared GH_REPO=owner/repo-name
    ```
 
-3. Copy the `ci_deploy_role_arn` output.
+2. Copy the `CiDeployRoleArn` value from the stack output.
 
-4. Add these **GitHub repository secrets** (`Settings → Secrets → Actions`):
+3. Add these to your GitHub repository (`Settings → Secrets and variables → Actions`):
 
-   | Secret | Value |
+   **Secret:**
+   | Name | Value |
    |---|---|
-   | `AWS_DEPLOY_ROLE_ARN` | `ci_deploy_role_arn` output from step 3 |
-   | `TF_STATE_BUCKET` | `state_bucket` output from bootstrap |
-   | `TF_LOCK_TABLE` | `lock_table` output from bootstrap |
+   | `AWS_DEPLOY_ROLE_ARN` | `CiDeployRoleArn` output from step 2 |
 
-5. Add this **GitHub repository variable** (`Settings → Variables → Actions`):
-
-   | Variable | Value |
+   **Variable:**
+   | Name | Value |
    |---|---|
-   | `GITHUB_REPO` | `owner/repo-name` (your GitHub repository) |
+   | `GH_REPO` | `owner/repo-name` (your GitHub repository) |
 
 ## Running Tests
 
@@ -175,28 +191,17 @@ Tests use dependency injection to mock all AWS clients — no AWS account requir
 
 ```bash
 cd agents/infra-agent
-python -m venv venv && source venv/bin/activate
-pip install -r ../../requirements.txt
 make test
 ```
-
-## Configuration
-
-| Variable | Default | Description |
-|---|---|---|
-| `bedrock_model_id` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Bedrock cross-region inference profile |
-| `project_name` | `infra-agent` | Prefix for all AWS resource names |
-| `aws_region` | `us-east-1` | Deployment region |
-| `log_retention_days` | `30` | CloudWatch log retention |
-| `lambda_layers_bucket` | *(required)* | S3 bucket for Lambda layers (output of shared stack) |
 
 ## Security
 
 - Bedrock guardrails block off-topic requests, prompt injection, profanity, PII, and harmful content
 - IAM policies are scoped to specific resource ARNs — no `Resource: "*"` on data-plane actions
 - S3 output bucket has public access blocked, SSE-S3 encryption, and versioning enabled
-- Docker container runs as a non-root user
-- Pre-commit hooks enforce credential detection, Terraform formatting, and Python style (`detect-aws-credentials`, `detect-private-key`, `terraform_fmt`, `black`, `flake8`)
+- GitHub Actions uses OIDC — no long-lived AWS credentials stored as secrets
+- CI deploy role trust policy is scoped to pushes from the `main` branch only
+- Pre-commit hooks enforce credential detection and Python style (`detect-aws-credentials`, `detect-private-key`, `black`, `flake8`)
 
 ## Troubleshooting
 
@@ -206,7 +211,7 @@ See [docs/runbook.md](docs/runbook.md) for:
 - Lambda layer binary not found
 - CloudWatch Logs Insights queries for structured log fields
 
-See [docs/post-mortem.md](docs/post-mortem.md) for root cause analysis of issues and architecture decisions encountered during development: Bedrock IAM ARN formats, the OpenAPI `requestBody` event structure, and the rationale for removing Step Functions in favor of the agent's native retry loop.
+See [docs/post-mortem.md](docs/post-mortem.md) for root cause analysis of issues and architecture decisions encountered during development.
 
 ## Roadmap
 

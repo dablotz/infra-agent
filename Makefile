@@ -1,4 +1,4 @@
-.PHONY: all deploy-shared deploy-infra deploy-orchestrator package-layers \
+.PHONY: all deploy-shared deploy-infra promote-infra deploy-orchestrator package-layers \
         destroy-all clean help docker-build docker-run venv
 # Lambda function packaging is handled by CDK (Code.from_asset on handler dirs).
 
@@ -16,7 +16,8 @@ help:
 	@echo "  all                 - Build layers + deploy everything"
 	@echo "  package-layers      - Build Lambda layers inside Docker (linux/amd64)"
 	@echo "  deploy-shared       - Deploy shared infrastructure (S3, EventBridge, OIDC)"
-	@echo "  deploy-infra        - Deploy infra-agent (requires layers to be built)"
+	@echo "  deploy-infra        - Deploy infra-agent; creates staging alias + smoke test"
+	@echo "  promote-infra       - Promote staging version to production alias"
 	@echo "  deploy-orchestrator - Deploy orchestrator agent"
 	@echo ""
 	@echo "Teardown:"
@@ -24,7 +25,7 @@ help:
 	@echo "  clean               - Remove generated layer zips and CDK output"
 	@echo ""
 	@echo "Options:"
-	@echo "  GH_REPO=owner/repo  - Enable GitHub OIDC deploy role"
+	@echo "  GH_REPO=owner/repo  - Enable GitHub OIDC deploy role (deploy-shared)"
 	@echo "  AWS_REGION          - AWS region (default: us-east-1)"
 
 venv:
@@ -47,7 +48,7 @@ package-layers: docker-build
 	@echo "Building Lambda layers inside Docker..."
 	@docker-compose run --rm iac-agent make -C agents/infra-agent build-layers
 
-all: package-layers deploy-shared deploy-infra deploy-orchestrator
+all: package-layers deploy-shared deploy-infra promote-infra deploy-orchestrator
 
 deploy-shared:
 	@echo "Deploying shared infrastructure..."
@@ -56,6 +57,8 @@ deploy-shared:
 
 # Requires layers to be built first (make package-layers).
 # CDK will fail at synth time if the layer zips are missing.
+# Creates a staging alias (new numbered version) and runs a smoke test against TSTALIASID.
+# Run promote-infra next to shift the production alias to the staged version.
 deploy-infra:
 	@echo "Deploying infra-agent..."
 	@$(CDK) deploy InfraAgentStack --require-approval never \
@@ -63,6 +66,20 @@ deploy-infra:
 	@AGENT_ID=$$(python3 -c \
 		"import json; d=json.load(open('/tmp/infra-outputs.json')); print(d['InfraAgentStack']['AgentId'])") && \
 		python3 scripts/smoke_test.py --agent-id $$AGENT_ID --alias-id TSTALIASID --region $(AWS_REGION)
+
+# Reads the version from the CDK-managed staging alias and updates (or creates)
+# the production alias to point to it. Also writes agent-id and alias-id to SSM
+# so deploy-orchestrator can pick them up.
+promote-infra:
+	@echo "Promoting infra-agent staging version to production..."
+	@AGENT_ID=$$(python3 -c \
+		"import json; d=json.load(open('/tmp/infra-outputs.json')); print(d['InfraAgentStack']['AgentId'])") && \
+	STAGING_ALIAS_ID=$$(python3 -c \
+		"import json; d=json.load(open('/tmp/infra-outputs.json')); print(d['InfraAgentStack']['StagingAliasId'])") && \
+	python3 scripts/promote_agent.py \
+		--agent-id $$AGENT_ID \
+		--staging-alias-id $$STAGING_ALIAS_ID \
+		--region $(AWS_REGION)
 
 deploy-orchestrator:
 	@echo "Deploying orchestrator..."

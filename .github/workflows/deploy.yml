@@ -170,6 +170,11 @@ jobs:
       - name: Install CDK CLI
         run: npm install -g aws-cdk
 
+      # CDK synthesizes all stacks (including InfraAgentStack) even when deploying
+      # only OrchestratorStack, so the layer zips must exist on this runner too.
+      - name: Build Lambda layers
+        run: cd agents/infra-agent && make build-layers
+
       - name: Promote infra-agent to production
         id: promote
         run: |

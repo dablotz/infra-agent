@@ -294,3 +294,203 @@ The agent instructions describe the workflow. The agent's own ReAct loop decides
 **Match the tool to the decision-maker.** Step Functions is the right tool when a deterministic system — not a model — makes branching decisions. The moment "should I try again?" depends on reading and understanding an error message, that decision belongs to the model. Encoding it as infrastructure is working against the grain of how agents work.
 
 **Architectural fitness for multi-agent systems requires revisiting single-agent assumptions.** The Step Functions design was reasonable for a standalone pipeline. Once it became a sub-agent in an orchestrated system, the overhead became obvious. When adding orchestration, audit whether existing sub-components still make sense at the new level of abstraction.
+
+---
+
+## Architecture Decision: Terraform → Python CDK
+
+**Date:** 2026-03-21
+**Type:** Deliberate architectural change — not a bug fix
+
+### Context
+
+The project was initially deployed using Terraform for all AWS resource management. After completing the agent-native pipeline refactor, infrastructure was migrated to Python AWS CDK (Cloud Development Kit).
+
+### Reasons for the Change
+
+**1. CDK is better suited to Bedrock agent resources.**
+Bedrock agents, guardrails, action groups, and aliases are supported as first-class CDK L1 constructs (`CfnAgent`, `CfnAgentAlias`, `CfnGuardrail`, etc.). While Terraform community providers exist, they lag the AWS-managed CloudFormation resource types. CDK deploys through CloudFormation, which has native support for all Bedrock resource types as AWS releases them.
+
+**2. Python is already the project language.**
+The Lambda handlers, deploy scripts, and test suite are all Python. CDK in Python means all infrastructure is expressed in the same language with the same toolchain — no context switching between HCL and Python, no separate Terraform binary or state management.
+
+**3. No remote state infrastructure required.**
+Terraform requires an S3 bucket and DynamoDB table for remote state before any other infrastructure can be created. CDK uses CloudFormation as its state store, which is AWS-managed and requires no bootstrapping beyond `cdk bootstrap` (and even that can be skipped for simple cases by managing the bootstrap stack manually). This removes one entire category of setup complexity for a portfolio project.
+
+**4. CDK drift detection is built in.**
+CloudFormation tracks resource state natively. CDK diff shows exactly what will change before deploying. Terraform's plan is equivalent, but requires the remote state infrastructure to exist and be consistent — another moving part.
+
+### What Was Removed
+
+- `agents/infra-agent/terraform/` and `agents/orchestrator/terraform/` directories
+- `shared/terraform/` directory (S3 state bucket, DynamoDB lock table, OIDC provider in HCL)
+- `shared/terraform/bootstrap/` (the Terraform-in-Terraform bootstrap pattern)
+- Terraform remote state S3 bucket and DynamoDB lock table
+- `TF_STATE_BUCKET` and `TF_LOCK_TABLE` GitHub Actions secrets
+
+### What Replaced It
+
+- `cdk/` directory with `SharedStack`, `InfraAgentStack`, and `OrchestratorStack`
+- All Bedrock, IAM, Lambda, S3, SSM, and CloudWatch resources managed as CDK constructs
+- `AWS_DEPLOY_ROLE_ARN` is the only AWS secret required in CI
+
+### Lesson Learned
+
+**IAM drift is invisible to CDK if you use the same policy name for manual updates.** During debugging of a Bedrock permissions issue, the orchestrator role's inline policy was updated manually using `aws iam put-role-policy` with the same CDK-generated policy name. CDK did not detect this as drift on the next deploy and would not have reverted it. Manual IAM changes must use a different policy name than the CDK-generated one, or be explicitly reversed, to prevent silent divergence from the CDK definition.
+
+---
+
+## Issue 4: `associate_agent_collaborator` ValidationException — Missing Bedrock Read Permissions
+
+**Date:** 2026-03-21
+**Severity:** High — orchestrator could not be registered with the infra-agent collaborator
+
+### What Happened
+
+After deploying the orchestrator agent stack, `scripts/setup_orchestrator.py` failed at the `associate_agent_collaborator` API call:
+
+```
+botocore.errorfactory.ValidationException: You do not have sufficient permissions
+to collaborate with this agent alias, or the agent alias does not exist.
+```
+
+The infra-agent alias existed and was in PREPARED state. IAM simulation confirmed `bedrock:InvokeAgent` was allowed for the orchestrator role on the correct resource. The error was a `ValidationException`, not an `AccessDeniedException`, which is why IAM simulation showed "allowed."
+
+### Root Cause Analysis
+
+When `associate_agent_collaborator` is called, Bedrock internally invokes read APIs on behalf of the orchestrator's execution role to verify the collaborator alias exists:
+
+- `bedrock:GetAgent`
+- `bedrock:GetAgentAlias`
+- `bedrock:ListAgents`
+- `bedrock:ListAgentAliases`
+
+The orchestrator's CDK-managed IAM policy only included `bedrock:InvokeAgent`. Bedrock could not confirm the alias existed and returned the misleading "no permissions to collaborate" message — a service-level validation error rather than an IAM authorization error.
+
+The misleading error message, combined with IAM simulation returning "allowed" for `InvokeAgent`, sent debugging in the wrong direction for several hours (wrong model type, wrong agent collaboration mode, SCPs, enforced guardrails, and trust policy conditions were all ruled out first).
+
+### Fix
+
+Added a second policy statement to the orchestrator's execution role in `cdk/stacks/orchestrator_stack.py`:
+
+```python
+orchestrator_role.add_to_policy(
+    iam.PolicyStatement(
+        actions=[
+            "bedrock:GetAgent",
+            "bedrock:GetAgentAlias",
+            "bedrock:ListAgents",
+            "bedrock:ListAgentAliases",
+        ],
+        resources=["*"],
+    )
+)
+```
+
+The `associate_agent_collaborator` call succeeded immediately after this was applied.
+
+### Lesson Learned
+
+**A `ValidationException` from a Bedrock control-plane API is not necessarily a data validation error.** Bedrock uses `ValidationException` for internal permission failures when the service cannot confirm a resource exists on behalf of a caller. If `associate_agent_collaborator` returns this error and the alias provably exists, the missing permissions are on the orchestrator's *execution role* (the role Bedrock assumes when acting on behalf of the agent), not on the caller's role.
+
+**IAM simulation only tests the permissions you give it.** Simulating `bedrock:InvokeAgent` confirmed that permission was correct, but did not reveal the missing read permissions that Bedrock needed internally. When a Bedrock API fails with a permissions-adjacent error and simulation passes, simulate the internal read calls Bedrock uses to validate the request, not just the primary action.
+
+---
+
+## Issue 5: GitHub Actions OIDC — CI Role Never Created
+
+**Date:** 2026-03-21
+**Severity:** High — all GitHub Actions deploys failing at the credentials step
+
+### What Happened
+
+After adding a GitHub Actions deploy workflow, every run failed immediately:
+
+```
+Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity
+```
+
+The GitHub OIDC provider (`token.actions.githubusercontent.com`) had been manually created in IAM. The `AWS_DEPLOY_ROLE_ARN` secret was set in the repository.
+
+### Root Cause Analysis
+
+The IAM role (`multi-agent-system-ci-deploy`) did not exist. `SharedStack` creates both the OIDC provider and the CI deploy role, but only when the `github_repo` CDK context variable is provided. The initial local deployment of `SharedStack` was run without `-c github_repo=...`, so the `if github_repo:` block in `shared_stack.py` was skipped entirely — no role was created.
+
+The OIDC provider was then manually created in the console (correctly), but the CI role was never created by any mechanism. The `AWS_DEPLOY_ROLE_ARN` secret pointed to a role ARN that did not exist.
+
+### Fix
+
+Re-deployed `SharedStack` locally with `github_repo` context and `create_github_oidc_provider=false` (since the provider was already manually created):
+
+```bash
+cd cdk && cdk deploy SharedStack --require-approval never \
+  -c github_repo=dablotz/infra-agent \
+  -c create_github_oidc_provider=false
+```
+
+The `CiDeployRoleArn` CloudFormation output was then used to set the `AWS_DEPLOY_ROLE_ARN` GitHub secret.
+
+Additionally, the deploy workflow was updated to always pass `-c create_github_oidc_provider=false` when deploying `SharedStack` — if GitHub Actions is running, the OIDC provider must already exist (it was used to authenticate the job).
+
+### Lesson Learned
+
+**The OIDC provider and CI role are a bootstrapping dependency.** They must exist before GitHub Actions can authenticate. For a CDK project where those resources are managed by CDK itself, a one-time local bootstrap deploy with admin credentials is required before CI can take over. Document this step explicitly — it is easy to create the OIDC provider manually in the console and assume the role will follow.
+
+**Add a CloudFormation output for the CI role ARN.** Without a visible output, the role ARN must be looked up via SSM or the IAM console. A `CiDeployRoleArn` output surfaces it directly in the CDK deploy output, making the copy-paste step obvious.
+
+---
+
+## Architecture Decision: Blue-Green Deployment for Bedrock Agents
+
+**Date:** 2026-03-21
+**Type:** Deliberate architectural addition — deployment safety gate
+
+### Context
+
+The initial CI pipeline deployed directly to the production alias on every push to main. A broken deploy would immediately affect production. The goal was to add an integration test gate so that the production alias is only promoted to a new version after end-to-end tests pass.
+
+### Design
+
+```
+push to main
+  → unit tests
+  → CDK deploy (DRAFT updated; staging alias → new numbered version)
+  → integration tests against staging alias
+  → promote: staging version → production alias
+  → orchestrator deploy
+```
+
+CDK's `CfnAgentAlias` without `routing_configuration` automatically creates a new numbered version from DRAFT on each deploy. This is used for the staging alias — it gives CI a tested, numbered version to promote without requiring a separate version-creation API call.
+
+The production alias is not managed by CDK. `scripts/promote_agent.py` reads the version from the staging alias (`get_agent_alias`) and applies it to the production alias (`update_agent_alias` or `create_agent_alias`). This keeps the production alias outside of CDK's control so that CDK deploys do not automatically promote it.
+
+### Implementation Issues Encountered
+
+**Issue A: `endSession=True` terminates agent sessions before the response arrives.**
+
+The initial integration test script used `endSession=True` in the `invoke_agent` call, matching the existing smoke test. For a simple prompt with a short response, this works — Bedrock sends the response chunk before the session termination acknowledgment. For complex multi-step agentic workflows (generate → validate → scan → upload), Bedrock sends the session termination message as the only chunk before the pipeline completes. Every integration test returned:
+
+```
+Session is terminated as 'endSession' flag is set in request.
+```
+
+Fix: remove `endSession=True`. Sessions expire naturally after 30 minutes. The boto3 client was also configured with `read_timeout=300` to handle the 30–90 second response latency of the full pipeline.
+
+**Issue B: `boto3.client('bedrock-agent').create_agent_version()` does not exist.**
+
+`scripts/promote_agent.py` was written with a call to `create_agent_version`, documented in a comment as "available since boto3 1.35.x." This method does not exist in the boto3 Bedrock Agent API — not in 1.35.x and not in 1.42.x. The error on the runner:
+
+```
+AttributeError: 'AgentsforBedrock' object has no attribute 'create_agent_version'.
+Did you mean: 'delete_agent_version'?
+```
+
+Fix: instead of creating a version via boto3, use the CDK-managed staging alias. CloudFormation creates the version automatically when `CfnAgentAlias` is deployed without `routing_configuration`. `promote_agent.py` calls `get_agent_alias` to read the version number from the staging alias's `routingConfiguration`, then calls `update_agent_alias` to apply it to the production alias. Both methods exist in boto3.
+
+### Lesson Learned
+
+**Verify API method existence before writing code that depends on it.** The boto3 Bedrock Agent client does not expose `create_agent_version`, despite the operation existing in the AWS REST API. Check `dir(client)` or the boto3 service reference before assuming an AWS API maps to a boto3 method.
+
+**Use CDK's automatic version creation rather than fighting the API gap.** `CfnAgentAlias` without `routing_configuration` is CloudFormation's built-in mechanism for creating a new agent version on each deploy. Leaning into this eliminated the need for a direct version-creation API call entirely.
+
+**Test streaming agent invocations without `endSession=True` when the pipeline has multiple steps.** The session termination behavior is timing-dependent — it works for fast single-step responses and fails silently for multi-step agentic workflows. The safe default for any agentic workflow is to omit the flag.
