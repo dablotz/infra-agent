@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Creates a numbered Bedrock Agent version and creates/updates the named
-production alias to point to it.
+"""Promotes the infra-agent staging version to the production alias.
 
-Uses boto3 bedrock-agent:create_agent_version directly (available since
-boto3 1.35.x). The project originally used a CloudFormation workaround
-because the API wasn't available — that workaround is no longer needed.
+Reads the agent version that the staging alias currently points to (created
+by CloudFormation when InfraAgentStack deployed), then creates or updates the
+production alias to point to that same version.
+
+This avoids calling boto3 create_agent_version, which does not exist in the
+boto3 Bedrock Agent API. Instead, CDK's CfnAgentAlias (without
+routing_configuration) handles version creation automatically during deploy.
 
 After promotion, writes agent-id and alias-id to SSM so OrchestratorStack
-can read them at cdk synth time:
+can read them:
   /{project_name}/infra-agent/agent-id
   /{project_name}/infra-agent/alias-id
 
 Writes GITHUB_OUTPUT-compatible lines:
-  alias_id=<alias-id>
+  alias_id=<production-alias-id>
 
 Exit codes:
   0 — promotion complete
@@ -34,14 +37,17 @@ def set_output(key: str, value: str) -> None:
             f.write(f"{key}={value}\n")
 
 
-def create_version(client, agent_id: str) -> str:
-    """Creates a numbered agent version and returns the version number string."""
-    response = client.create_agent_version(agentId=agent_id)
-    return response["agentVersion"]["agentVersion"]
+def get_version_from_alias(client, agent_id: str, alias_id: str) -> str:
+    """Returns the agent version number that the given alias points to."""
+    response = client.get_agent_alias(agentId=agent_id, agentAliasId=alias_id)
+    routing = response["agentAlias"].get("routingConfiguration", [])
+    if not routing:
+        raise ValueError(f"Staging alias {alias_id} has no routing configuration")
+    return routing[0]["agentVersion"]
 
 
 def find_alias(client, agent_id: str, alias_name: str):
-    """Returns alias_id or None."""
+    """Returns alias_id if the named alias exists, else None."""
     paginator = client.get_paginator("list_agent_aliases")
     for page in paginator.paginate(agentId=agent_id):
         for alias in page["agentAliasSummaries"]:
@@ -63,19 +69,22 @@ def write_to_ssm(alias_id: str, agent_id: str, project_name: str, region: str) -
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create a Bedrock agent version and update the production alias"
+        description="Promote staging version to the production alias"
     )
     parser.add_argument("--agent-id", required=True)
-    parser.add_argument("--alias-name", default="production")
+    parser.add_argument("--staging-alias-id", required=True,
+                        help="Alias ID of the CDK-managed staging alias")
+    parser.add_argument("--alias-name", default="production",
+                        help="Name of the production alias to create or update")
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--project-name", default="multi-agent-system")
     args = parser.parse_args()
 
     client = boto3.client("bedrock-agent", region_name=args.region)
 
-    print(f"Creating new agent version for {args.agent_id}...")
-    version = create_version(client, args.agent_id)
-    print(f"Version {version} ready.")
+    print(f"Reading version from staging alias {args.staging_alias_id}...")
+    version = get_version_from_alias(client, args.agent_id, args.staging_alias_id)
+    print(f"Staging alias points to version {version}.")
 
     alias_id = find_alias(client, args.agent_id, args.alias_name)
 

@@ -493,11 +493,22 @@ class InfraAgentStack(Stack):
                 source_arn=cfn_agent.attr_agent_arn,
             )
 
-        # The production alias is intentionally NOT managed by CDK.
-        # CDK deploys only update the DRAFT version. After integration tests
-        # pass against TSTALIASID (DRAFT), scripts/promote_agent.py creates a
-        # numbered version and updates the production alias. This ensures
-        # production is only ever promoted to a tested version.
+        # Staging alias — routing_configuration intentionally omitted so that
+        # CloudFormation automatically creates a new numbered version from DRAFT
+        # on every deploy and routes this alias to it. Integration tests run
+        # against this alias. After tests pass, scripts/promote_agent.py reads
+        # the version number from this alias and applies it to the production
+        # alias — no boto3 create_agent_version call required.
+        staging_alias = bedrock.CfnAgentAlias(
+            self,
+            "StagingAlias",
+            agent_id=cfn_agent.attr_agent_id,
+            agent_alias_name="staging",
+        )
+
+        # The production alias is NOT managed by CDK. It is created/updated by
+        # scripts/promote_agent.py only after integration tests pass, ensuring
+        # production always points to a tested version.
 
         # SSM parameters — read by OrchestratorStack and the deploy workflow.
         ssm.StringParameter(
@@ -506,7 +517,8 @@ class InfraAgentStack(Stack):
             parameter_name=f"/{project_name}/infra-agent/agent-id",
             string_value=cfn_agent.attr_agent_id,
         )
-        # alias-id is written by scripts/promote_agent.py after integration tests pass.
+        # production alias-id is written by scripts/promote_agent.py after tests pass.
 
         cdk.CfnOutput(self, "AgentId", value=cfn_agent.attr_agent_id)
         cdk.CfnOutput(self, "AgentArn", value=cfn_agent.attr_agent_arn)
+        cdk.CfnOutput(self, "StagingAliasId", value=staging_alias.attr_agent_alias_id)

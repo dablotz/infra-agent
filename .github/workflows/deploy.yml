@@ -41,6 +41,7 @@ jobs:
 
     outputs:
       agent_id: ${{ steps.outputs.outputs.agent_id }}
+      staging_alias_id: ${{ steps.outputs.outputs.staging_alias_id }}
 
     steps:
       - uses: actions/checkout@v6
@@ -89,7 +90,7 @@ jobs:
           cdk deploy InfraAgentStack --require-approval never \
             --outputs-file /tmp/infra-outputs.json
 
-      - name: Capture agent ID
+      - name: Capture stack outputs
         id: outputs
         run: |
           python3 - <<'EOF'
@@ -97,11 +98,13 @@ jobs:
           d = json.load(open('/tmp/infra-outputs.json'))['InfraAgentStack']
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"agent_id={d['AgentId']}\n")
+              f.write(f"staging_alias_id={d['StagingAliasId']}\n")
           EOF
 
-  # Runs integration tests against TSTALIASID (DRAFT). All four action groups
-  # must fire and produce an S3 artifact for a test to pass. If any test fails,
-  # the promote job is skipped and production stays on the previous version.
+  # Runs integration tests against the staging alias (the new version created by
+  # CDK on this deploy). All four action groups must fire and produce an S3
+  # artifact for a test to pass. If any test fails, the promote job is skipped
+  # and production stays on the previous version.
   integration-tests:
     name: Integration Tests
     needs: deploy
@@ -127,7 +130,7 @@ jobs:
         run: |
           python scripts/integration_test.py \
             --agent-id "${{ needs.deploy.outputs.agent_id }}" \
-            --alias-id TSTALIASID \
+            --alias-id "${{ needs.deploy.outputs.staging_alias_id }}" \
             --region "${{ env.AWS_REGION }}"
 
   # Promotes the tested DRAFT to a numbered production version, then deploys
@@ -135,7 +138,7 @@ jobs:
   # pass — if tests fail this job is skipped and production is unchanged.
   promote:
     name: Promote & Deploy Orchestrator
-    needs: integration-tests
+    needs: [deploy, integration-tests]
     runs-on: ubuntu-latest
 
     outputs:
@@ -172,6 +175,7 @@ jobs:
         run: |
           python scripts/promote_agent.py \
             --agent-id "${{ needs.deploy.outputs.agent_id }}" \
+            --staging-alias-id "${{ needs.deploy.outputs.staging_alias_id }}" \
             --alias-name production \
             --region "${{ env.AWS_REGION }}"
 
