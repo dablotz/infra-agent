@@ -14,6 +14,7 @@ import sys
 import uuid
 
 import boto3
+from botocore.config import Config
 
 
 def main():
@@ -27,18 +28,24 @@ def main():
     parser.add_argument("--region", default="us-east-1")
     args = parser.parse_args()
 
-    client = boto3.client("bedrock-agent-runtime", region_name=args.region)
+    # The full generation pipeline can take 30-90s; raise the read timeout.
+    client = boto3.client(
+        "bedrock-agent-runtime",
+        region_name=args.region,
+        config=Config(read_timeout=300, connect_timeout=10),
+    )
     session_id = str(uuid.uuid4())
 
     print(f"Smoke test: agent={args.agent_id} alias={args.alias_id}")
 
     try:
+        # endSession omitted — setting it True causes Bedrock to return a
+        # session termination message instead of the agent's actual response.
         response = client.invoke_agent(
             agentId=args.agent_id,
             agentAliasId=args.alias_id,
             sessionId=session_id,
             inputText="Generate a minimal S3 bucket resource in Terraform.",
-            endSession=True,
         )
 
         output_text = ""

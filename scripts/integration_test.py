@@ -19,6 +19,7 @@ import sys
 import uuid
 
 import boto3
+from botocore.config import Config
 
 
 # S3 URI produced by artifact_uploader:
@@ -65,13 +66,18 @@ TEST_CASES = [
 
 
 def invoke_agent(client, agent_id: str, alias_id: str, prompt: str) -> str:
-    """Invokes the agent and returns the full concatenated response text."""
+    """Invokes the agent and returns the full concatenated response text.
+
+    endSession is intentionally omitted — setting it to True causes Bedrock to
+    return a session termination message as the only chunk instead of waiting
+    for the full multi-step agentic workflow (generate → validate → scan →
+    upload) to complete. Sessions expire naturally after 30 minutes.
+    """
     response = client.invoke_agent(
         agentId=agent_id,
         agentAliasId=alias_id,
         sessionId=str(uuid.uuid4()),
         inputText=prompt,
-        endSession=True,
     )
     return "".join(
         event["chunk"]["bytes"].decode("utf-8")
@@ -143,7 +149,10 @@ def main():
     parser.add_argument("--region", default="us-east-1")
     args = parser.parse_args()
 
-    runtime = boto3.client("bedrock-agent-runtime", region_name=args.region)
+    # Each agent invocation can take 30-90 seconds for the full pipeline.
+    # The default boto3 read timeout (60s) is too short for back-to-back tests.
+    client_config = Config(read_timeout=300, connect_timeout=10)
+    runtime = boto3.client("bedrock-agent-runtime", region_name=args.region, config=client_config)
     s3 = boto3.client("s3", region_name=args.region)
 
     print(f"Integration tests: agent={args.agent_id} alias={args.alias_id}")
