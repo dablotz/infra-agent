@@ -13,7 +13,8 @@ User
        │           ├── ValidateIaC  — terraform init + validate + tflint
        │           ├── ScanIaC      — Checkov
        │           └── UploadIaC    — S3
-       └── Docs-Agent            (planned)
+       └── GenerateDocs          ✅ implemented (orchestrator action group)
+             └── Reads IaC from S3, generates runbook via Bedrock, writes to S3
 ```
 
 ### Infra-Agent
@@ -32,7 +33,9 @@ Accepts a natural language infrastructure description and produces Terraform, Cl
 │   │   ├── lambda_functions/  # Pipeline Lambda handlers (one per action group)
 │   │   └── tests/             # Unit tests (57 tests, no AWS account required)
 │   └── orchestrator/
-│       └── bedrock/           # Supervisor agent instructions
+│       ├── bedrock/           # Supervisor agent instructions and GenerateDocs schema
+│       ├── lambda_functions/  # GenerateDocs handler
+│       └── tests/             # Unit tests for orchestrator Lambdas
 ├── cdk/
 │   ├── app.py                 # CDK app — SharedStack, InfraAgentStack, OrchestratorStack
 │   ├── stacks/                # CDK stack definitions
@@ -215,7 +218,6 @@ See [docs/post-mortem.md](docs/post-mortem.md) for root cause analysis of issues
 
 ## Roadmap
 
-- **Docs-Agent** — receives IaC artifacts via EventBridge and generates human-readable documentation
 - **Existing IaC RAG lookup** — index an existing codebase into a Bedrock Knowledge Base so the infra-agent can reference established patterns and resource naming conventions when generating new code, producing output that fits the style of existing infrastructure. Deferred due to cost: the required vector store (OpenSearch Serverless or Aurora pgvector) and a Git→S3 sync pipeline are disproportionate for a portfolio deployment. A separate project will explore the data ingestion pipeline independently. See [docs/post-mortem.md](docs/post-mortem.md) for the architectural analysis.
 
 ## Cost Estimate

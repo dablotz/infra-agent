@@ -1,0 +1,73 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Generate Docs API",
+    "version": "1.0.0",
+    "description": "Generate documentation from a stored code artifact"
+  },
+  "paths": {
+    "/generate-docs": {
+      "post": {
+        "summary": "Generate documentation for a code artifact",
+        "description": "Reads the code file at the given S3 URI, generates documentation using an LLM, and stores it in S3. For IaC artifacts this produces a deployment runbook; for application code it produces developer documentation. Returns the S3 URI of the generated documentation.",
+        "operationId": "generateDocs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["s3_uri"],
+                "properties": {
+                  "s3_uri": {
+                    "type": "string",
+                    "description": "S3 URI of the generated code artifact (e.g. s3://bucket/generated/uuid/timestamp.tf)"
+                  },
+                  "artifact_type": {
+                    "type": "string",
+                    "description": "Type of code artifact — pass whatever the upstream sub-agent reported (e.g. terraform, cloudformation, cdk, go, rust). If omitted, the type is read from the artifact's S3 metadata."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Documentation generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "doc_s3_uri": {
+                      "type": "string",
+                      "description": "S3 URI of the generated Markdown documentation"
+                    },
+                    "request_id": {
+                      "type": "string",
+                      "description": "Request ID linking the code artifact and its documentation"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -6,12 +6,18 @@ from aws_cdk import (
     Stack,
     aws_bedrock as bedrock,
     aws_iam as iam,
+    aws_lambda as lambda_,
     aws_logs as logs,
+    aws_s3 as s3,
 )
 from constructs import Construct
 
 BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 BEDROCK_BASE_MODEL_ID = re.sub(r"^[a-z]{2}\.", "", BEDROCK_MODEL_ID)
+
+# Infra-agent output bucket name follows this pattern (defined in InfraAgentStack).
+# Referenced here without importing the stack to keep stacks decoupled.
+INFRA_AGENT_NAME = "infra-agent"
 
 
 class OrchestratorStack(Stack):
@@ -33,6 +39,14 @@ class OrchestratorStack(Stack):
         here = os.path.dirname(__file__)
         repo_root = os.path.abspath(os.path.join(here, "..", ".."))
         bedrock_dir = os.path.join(repo_root, "agents", "orchestrator", "bedrock")
+        lambda_dir = os.path.join(repo_root, "agents", "orchestrator", "lambda_functions")
+
+        # Reference the IaC output bucket created by InfraAgentStack (no ownership transfer).
+        iac_output_bucket = s3.Bucket.from_bucket_name(
+            self,
+            "IacOutputBucket",
+            bucket_name=f"{INFRA_AGENT_NAME}-iac-output-{account}",
+        )
 
         # ── Bedrock guardrail ────────────────────────────────────────────────
         guardrail = bedrock.CfnGuardrail(
@@ -151,7 +165,7 @@ class OrchestratorStack(Stack):
             )
         )
 
-        # ── CloudWatch log group ─────────────────────────────────────────────
+        # ── CloudWatch log groups ────────────────────────────────────────────
         logs.LogGroup(
             self,
             "OrchestratorLogGroup",
@@ -160,9 +174,77 @@ class OrchestratorStack(Stack):
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
 
+        log_group_doc_generator = logs.LogGroup(
+            self,
+            "LogGroupDocGenerator",
+            log_group_name=f"/aws/lambda/{project_name}-doc-generator",
+            retention=log_retention,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+
+        # ── IAM role for doc generator Lambda ────────────────────────────────
+        doc_generator_role = iam.Role(
+            self,
+            "DocGeneratorRole",
+            role_name=f"{project_name}-doc-generator-role",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+        )
+        doc_generator_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=[
+                    f"arn:aws:bedrock:{region}:{account}:inference-profile/{BEDROCK_MODEL_ID}",
+                    f"arn:aws:bedrock:us-east-1::foundation-model/{BEDROCK_BASE_MODEL_ID}",
+                    f"arn:aws:bedrock:us-west-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
+                    f"arn:aws:bedrock:us-east-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
+                ],
+            )
+        )
+        doc_generator_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject"],
+                resources=[f"{iac_output_bucket.bucket_arn}/generated/*"],
+            )
+        )
+        doc_generator_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["s3:PutObject"],
+                resources=[f"{iac_output_bucket.bucket_arn}/docs/*"],
+            )
+        )
+        doc_generator_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[f"{log_group_doc_generator.log_group_arn}:*"],
+            )
+        )
+
+        # ── Doc generator Lambda ─────────────────────────────────────────────
+        doc_generator = lambda_.Function(
+            self,
+            "DocGenerator",
+            function_name=f"{project_name}-doc-generator",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.lambda_handler",
+            code=lambda_.Code.from_asset(
+                os.path.join(lambda_dir, "doc_generator")
+            ),
+            role=doc_generator_role,
+            timeout=cdk.Duration.seconds(300),
+            memory_size=512,
+            environment={
+                "BEDROCK_MODEL_ID": BEDROCK_MODEL_ID,
+                "OUTPUT_BUCKET": iac_output_bucket.bucket_name,
+            },
+            log_group=log_group_doc_generator,
+        )
+
         # ── Orchestrator Bedrock agent ───────────────────────────────────────
         with open(os.path.join(bedrock_dir, "agent_instructions.txt")) as f:
             agent_instructions = f.read()
+
+        with open(os.path.join(bedrock_dir, "generate_docs_schema.json")) as f:
+            generate_docs_schema = f.read()
 
         # prepare_agent=False — the orchestrator must be prepared *after* the
         # collaborator is registered (done in a separate update or via the
@@ -181,6 +263,24 @@ class OrchestratorStack(Stack):
                 guardrail_identifier=guardrail.attr_guardrail_id,
                 guardrail_version=guardrail_version.attr_version,
             ),
+            action_groups=[
+                bedrock.CfnAgent.AgentActionGroupProperty(
+                    action_group_name="GenerateDocs",
+                    action_group_executor=bedrock.CfnAgent.ActionGroupExecutorProperty(
+                        lambda_=doc_generator.function_arn
+                    ),
+                    api_schema=bedrock.CfnAgent.APISchemaProperty(
+                        payload=generate_docs_schema
+                    ),
+                ),
+            ],
+        )
+
+        # Allow Bedrock to invoke the doc generator Lambda
+        doc_generator.add_permission(
+            "BedrockInvokeDocGenerator",
+            principal=iam.ServicePrincipal("bedrock.amazonaws.com"),
+            source_arn=orchestrator_agent.attr_agent_arn,
         )
 
         # Collaborator registration and agent preparation are handled by
