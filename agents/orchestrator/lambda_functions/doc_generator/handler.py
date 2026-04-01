@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 import boto3
 
+import manifest_renderer
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -57,6 +59,7 @@ def lambda_handler(event, context, s3_client=None, bedrock_client=None):
 
     props = _get_props(event)
     s3_uri = _prop(props, "s3_uri")
+    manifest_s3_path = _prop(props, "manifest_s3_path", "")
     # artifact_type is a hint from the caller; S3 metadata takes precedence when present.
     artifact_type_hint = _prop(props, "artifact_type", "")
 
@@ -85,14 +88,30 @@ def lambda_handler(event, context, s3_client=None, bedrock_client=None):
         logger.error(json.dumps({"message": "s3_read_failed", "s3_uri": s3_uri, "error": str(e)}))
         return _response(event, 400, {"error": f"Failed to read artifact from S3: {e}"})
 
+    # Optionally load the configuration manifest for manifest-aware runbooks.
+    manifest = None
+    if manifest_s3_path and artifact_type in _IAC_TYPES:
+        try:
+            manifest_bucket, manifest_key = _parse_s3_uri(manifest_s3_path)
+            manifest_obj = s3.get_object(Bucket=manifest_bucket, Key=manifest_key)
+            manifest = json.loads(manifest_obj["Body"].read().decode("utf-8"))
+        except Exception as e:
+            logger.warning(json.dumps({
+                "message": "manifest_read_failed",
+                "manifest_s3_path": manifest_s3_path,
+                "error": str(e),
+            }))
+            # Non-fatal: fall back to standard runbook generation.
+
     logger.info(json.dumps({
         "message": "generating_documentation",
         "s3_uri": s3_uri,
         "artifact_type": artifact_type,
+        "manifest_present": manifest is not None,
     }))
 
     model_id = os.environ.get("BEDROCK_MODEL_ID", "")
-    prompt = _build_prompt(artifact_content, artifact_type)
+    prompt = _build_prompt(artifact_content, artifact_type, manifest=manifest)
     body = json.dumps({
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": 4096,
@@ -101,7 +120,12 @@ def lambda_handler(event, context, s3_client=None, bedrock_client=None):
 
     response = bedrock.invoke_model(modelId=model_id, body=body)
     result = json.loads(response["body"].read())
-    documentation = result["content"][0]["text"].strip()
+    claude_output = result["content"][0]["text"].strip()
+
+    if manifest is not None and artifact_type in _IAC_TYPES:
+        documentation = _assemble_manifest_runbook(claude_output, manifest)
+    else:
+        documentation = claude_output
 
     # Extract request_id from the artifact S3 key (generated/{request_id}/...)
     key_parts = artifact_key.split("/")
@@ -136,10 +160,39 @@ def lambda_handler(event, context, s3_client=None, bedrock_client=None):
     })
 
 
-def _build_prompt(artifact_content: str, artifact_type: str) -> str:
+def _build_prompt(artifact_content: str, artifact_type: str, manifest=None) -> str:
     if artifact_type in _IAC_TYPES:
+        if manifest is not None:
+            return _iac_prompt_with_manifest(artifact_content, artifact_type)
         return _iac_prompt(artifact_content, artifact_type)
     return _code_prompt(artifact_content, artifact_type)
+
+
+def _assemble_manifest_runbook(claude_output: str, manifest: dict) -> str:
+    """Splice manifest-rendered sections into Claude's infrastructure runbook.
+
+    Claude is asked to produce Infrastructure Overview, Deployment Steps, and
+    Rollback Procedure.  This function inserts the deterministic Configuration
+    Decisions table before '## Deployment Steps' and appends the Assumptions &
+    Review Items checklist at the end.
+    """
+    config_md, assumptions_md = manifest_renderer.render(manifest)
+
+    deploy_header = "## Deployment Steps"
+    if deploy_header in claude_output:
+        idx = claude_output.index(deploy_header)
+        runbook = (
+            claude_output[:idx].rstrip()
+            + "\n\n"
+            + config_md
+            + "\n"
+            + claude_output[idx:]
+        )
+    else:
+        # Fallback: append both sections when header is absent.
+        runbook = claude_output + "\n\n" + config_md
+
+    return runbook.rstrip() + "\n\n" + assumptions_md
 
 
 def _iac_prompt(iac_content: str, iac_type: str) -> str:
@@ -160,6 +213,26 @@ Generate a runbook in Markdown format that includes:
 
 Be specific and practical. Reference the actual resource names and configurations from the code.
 Output only the Markdown runbook — no preamble or explanation."""
+
+
+def _iac_prompt_with_manifest(iac_content: str, iac_type: str) -> str:
+    return f"""You are a technical documentation specialist. Analyze the following {iac_type} infrastructure code and generate a structured runbook.
+
+IaC CODE:
+{iac_content}
+
+Generate a runbook in Markdown format with EXACTLY these three sections, using the exact headings shown:
+
+## Infrastructure Overview
+A concise summary of what this infrastructure creates — the services deployed, their roles, and how they relate to each other. Reference actual resource names from the code.
+
+## Deployment Steps
+Step-by-step instructions to deploy this infrastructure. Include prerequisites (IAM permissions, required tools, dependencies) and post-deployment verification steps.
+
+## Rollback Procedure
+How to safely roll back or tear down this infrastructure if the deployment fails or the resources are no longer needed.
+
+Output only the Markdown runbook with those exact section headings — no preamble, no additional sections."""
 
 
 def _code_prompt(code_content: str, language: str) -> str:
