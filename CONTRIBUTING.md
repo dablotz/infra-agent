@@ -6,7 +6,7 @@ That said, you are welcome and encouraged to:
 
 - **Fork it** and build your own agents on top of the architecture
 - **Use it as a starting point** for your own Bedrock multi-agent system
-- **Adapt the patterns** — the Step Functions pipeline, Lambda layer approach, and action group handler design are all reusable templates
+- **Adapt the patterns** — the CDK stack structure, Lambda layer approach, and action group handler design are all reusable templates
 
 ## Good starting points if you want to extend this
 
