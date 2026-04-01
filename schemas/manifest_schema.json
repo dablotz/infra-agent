@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "IaC Configuration Manifest",
+  "description": "Fully resolved parameter set for a single IaC artifact. Every parameter must declare its source so that downstream agents and humans can audit where each value came from.",
+  "type": "object",
+  "required": ["schema_version", "ir_source", "parameters"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Semantic version of this schema.",
+      "example": "1.0"
+    },
+    "ir_source": {
+      "type": "string",
+      "description": "S3 key of the IR JSON file this manifest was derived from."
+    },
+    "parameters": {
+      "type": "array",
+      "description": "Flat list of every resolved parameter for the IaC output.",
+      "items": {
+        "type": "object",
+        "required": ["parameter", "value", "source", "reasoning"],
+        "additionalProperties": false,
+        "properties": {
+          "parameter": {
+            "type": "string",
+            "description": "Dot-notation Terraform resource address matching the fully qualified parameter path, e.g. 'aws_instance.web_server.instance_type'."
+          },
+          "value": {
+            "description": "The resolved value for this parameter. May be any JSON type."
+          },
+          "source": {
+            "type": "string",
+            "description": "How this value was determined.",
+            "enum": ["user_provided", "agent_default", "parsed"],
+            "x-enum-descriptions": {
+              "user_provided": "The user explicitly specified this value in their request.",
+              "agent_default": "The agent chose this value based on best practices. See reasoning field.",
+              "parsed": "The value was extracted directly from the source diagram."
+            }
+          },
+          "reasoning": {
+            "type": ["string", "null"],
+            "description": "Required when source is 'agent_default': plain English explanation of why this value was chosen and what alternatives were considered. Must be null when source is 'user_provided' or 'parsed'."
+          }
+        },
+        "if": {
+          "properties": { "source": { "const": "agent_default" } },
+          "required": ["source"]
+        },
+        "then": {
+          "properties": {
+            "reasoning": { "type": "string", "minLength": 1 }
+          }
+        },
+        "else": {
+          "properties": {
+            "reasoning": { "type": "null" }
+          }
+        }
+      }
+    }
+  }
+}

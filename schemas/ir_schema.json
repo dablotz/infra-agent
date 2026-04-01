@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Diagram-to-IaC Normalized Intermediate Representation",
+  "description": "Schema for the normalized IR produced by the diagram parser and consumed by downstream IaC-generation agents.",
+  "type": "object",
+  "required": ["schema_version", "source_file", "services", "relationships", "network"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Semantic version of this schema. Bump the major version on breaking changes.",
+      "example": "1.0"
+    },
+    "source_file": {
+      "type": "string",
+      "description": "S3 key of the source diagram file that produced this IR."
+    },
+    "services": {
+      "type": "array",
+      "description": "All AWS resource nodes extracted from the diagram.",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "label"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable node identifier from the source diagram (e.g. draw.io mxCell id)."
+          },
+          "type": {
+            "type": "string",
+            "description": "Terraform resource type, e.g. aws_instance. 'unknown' when the shape was recognized as AWS but unmapped."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable label from the diagram, used as the Terraform resource name."
+          },
+          "config": {
+            "type": "object",
+            "description": "Key-value pairs extracted directly from the diagram node (e.g. CIDR block from a VPC shape label).",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "description": "Directed edges between service nodes.",
+      "items": {
+        "type": "object",
+        "required": ["source", "target", "relationship_type"],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "id of the originating service node."
+          },
+          "target": {
+            "type": "string",
+            "description": "id of the destination service node."
+          },
+          "relationship_type": {
+            "type": "string",
+            "description": "Semantic relationship between source and target.",
+            "enum": ["connects_to", "depends_on", "routes_to", "contained_by", "references"]
+          },
+          "label": {
+            "type": ["string", "null"],
+            "description": "Raw edge label from the diagram, or null for unlabeled edges."
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "description": "Denormalized view of network topology derived from the services list. Populated automatically by the parser for aws_vpc, aws_subnet, and aws_security_group resources.",
+      "required": ["vpcs", "subnets", "security_groups"],
+      "additionalProperties": false,
+      "properties": {
+        "vpcs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "cidr_block": {
+                "type": ["string", "null"],
+                "description": "CIDR block if parseable from the diagram label, e.g. '10.0.0.0/16'."
+              }
+            }
+          }
+        },
+        "subnets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "vpc_id": {
+                "type": ["string", "null"],
+                "description": "id of the parent VPC if determinable from diagram containment."
+              },
+              "availability_zone": {
+                "type": ["string", "null"],
+                "description": "AZ if present in the label, e.g. 'us-east-1a'."
+              }
+            }
+          }
+        },
+        "security_groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "description": {
+                "type": ["string", "null"],
+                "description": "Free-text description if present in the diagram label."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
