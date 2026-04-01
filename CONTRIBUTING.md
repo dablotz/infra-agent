@@ -12,9 +12,11 @@ That said, you are welcome and encouraged to:
 
 **Add a new agent** — the shared infrastructure (EventBridge bus, S3 artifact bucket, Lambda layers bucket) is already in place. Each agent lives under `agents/<agent-name>/` and follows the same structure as the infra-agent.
 
-**Add a new pipeline stage** — the Step Functions state machine in `agents/infra-agent/terraform/main.tf` is straightforward to extend. Add a new Lambda, wire it into the state machine, and give it an IAM role following the existing patterns.
+**Add a new pipeline stage** — add a new Lambda handler under `agents/infra-agent/lambda_functions/`, wire it into `cdk/stacks/infra_agent_stack.py` following the existing patterns, and add an action group schema under `agents/infra-agent/bedrock/`.
 
-**Swap the model** — change `bedrock_model_id` in `variables.tf`. The `bedrock_base_model_id` local strips the cross-region prefix automatically so IAM ARNs stay correct. See [docs/post-mortem.md](docs/post-mortem.md) for why this matters.
+**Add a new diagram format** — add a parser function to `diagram_parser/handler.py` (or create a new Lambda for complex formats), register the file extension in `upload_router.py`, and update the S3 event filter in `diagram_pipeline_stack.py`. The IR and manifest schemas (`schemas/ir_schema.json`, `schemas/manifest_schema.json`) are the stable contract — as long as your parser produces valid output against them, the rest of the pipeline requires no changes.
+
+**Swap the model** — change `BEDROCK_MODEL_ID` in the relevant CDK stack (`cdk/stacks/infra_agent_stack.py`, `cdk/stacks/orchestrator_stack.py`, or `cdk/stacks/diagram_pipeline_stack.py`). The `BEDROCK_BASE_MODEL_ID` environment variable is derived automatically by stripping the cross-region prefix so IAM ARNs stay correct. See [docs/post-mortem.md](docs/post-mortem.md) for why this matters.
 
 **Add CloudFormation or CDK support** — the validator currently skips non-Terraform code. The layer and pipeline are already parameterized on `iac_type`.
 

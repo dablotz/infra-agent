@@ -2,35 +2,43 @@
 
 ## Overview
 
-A Bedrock-powered multi-agent system that generates validated, security-scanned Infrastructure as Code from natural language descriptions and produces runbook documentation for the generated artifacts.
+A Bedrock-powered multi-agent system that generates validated, security-scanned Infrastructure as Code from natural language descriptions or uploaded architecture diagrams, and produces runbook documentation for the generated artifacts.
 
-- **Orchestrator agent** (supervisor mode) — receives user requests, delegates to sub-agents, calls GenerateDocs, returns both artifact URIs.
-- **Infra-agent** — generates IaC via a 4-action-group ReAct loop: generate → validate → scan → upload.
-- **GenerateDocs** — Lambda action group on the orchestrator that reads the uploaded IaC from S3 and produces a Markdown runbook.
+- **Orchestrator agent** (supervisor mode) — receives user requests (text or diagram), delegates to sub-agents, calls GenerateDocs, returns artifact URIs.
+- **Infra-agent** — generates IaC via a ReAct loop with 5 action groups: two entry paths (GenerateIaC for text, ProcessDiagram for diagrams) then validate → scan → upload.
+- **Diagram pipeline** — a preprocessing step that converts uploaded diagrams to a Normalized Intermediate Representation (IR) and configuration manifest before invoking the orchestrator.
+- **GenerateDocs** — Lambda action group on the orchestrator that reads the uploaded IaC from S3 and produces a Markdown runbook including a configuration manifest snapshot.
 
 ---
 
 ## Architecture
 
 ```
-User
- └── Orchestrator Agent (Bedrock, supervisor mode)
-       ├── InfraAgent (Bedrock sub-agent, ReAct loop)
-       │     ├── GenerateIaC  — Bedrock InvokeModel
-       │     ├── ValidateIaC  — terraform + tflint (Lambda layer)
-       │     ├── ScanIaC      — checkov (Lambda layer)
-       │     └── UploadIaC    — S3 put
-       └── GenerateDocs (Lambda action group)
-             └── S3 get → Bedrock InvokeModel → S3 put
+                      ┌─ Text request ────────────────────────────────────────┐
+                      │                                                        │
+User uploads diagram  │                                                        ▼
+(.drawio/.xml/.png/.jpg)                                       Orchestrator Agent (supervisor mode)
+        │                                                            ├── Infra-Agent (ReAct loop)
+        ▼                                                            │     ├── GenerateIaC    (text path)
+S3 → upload_router Lambda                                           │     ├── ProcessDiagram (diagram path)
+  ├── diagram_parser Lambda (XML → IR + manifest)                   │     ├── ValidateIaC
+  └── png_pipeline Lambda   (Rekognition + Vision → IR + manifest)  │     ├── ScanIaC
+              │                                                      │     └── UploadIaC
+              └── [DIAGRAM_CONTEXT] in message ─────────────────────┘
+                                                                     └── GenerateDocs (action group)
+                                                                           └── IaC → Bedrock → runbook → S3
 ```
 
 **Key resources:**
 | Resource | Name |
 |---|---|
 | S3 artifact bucket | `infra-agent-iac-output-{account_id}` |
+| S3 diagrams bucket | `{project_name}-diagrams-{account_id}` |
 | Lambda layers | `infra-agent-terraform-tools`, `infra-agent-security-tools` |
 | SSM — infra-agent ID | `/multi-agent-system/infra-agent/agent-id` |
 | SSM — production alias | `/multi-agent-system/infra-agent/alias-id` |
+| SSM — diagrams bucket | `/multi-agent-system/diagram-pipeline/diagrams-bucket` |
+| SSM — Rekognition threshold | `/multi-agent-system/diagram-pipeline/rekognition-confidence-threshold` |
 | Bedrock agents | `multi-agent-system-orchestrator`, `infra-agent` |
 | CloudWatch (orchestrator) | `/aws/bedrock/agents/multi-agent-system-orchestrator` |
 
@@ -40,7 +48,7 @@ User
 
 ```bash
 # Required tools
-aws-cli >= 2.x                        # configured with Bedrock, Lambda, S3, IAM, SSM access
+aws-cli >= 2.x                        # configured with Bedrock, Lambda, S3, IAM, SSM, Rekognition access
 node >= 20 + npm install -g aws-cdk   # CDK CLI
 docker + docker compose               # layer builds only (not needed in CI)
 python >= 3.12
@@ -49,9 +57,9 @@ python >= 3.12
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Enable Bedrock model access in the console
-# Bedrock → Model access → Claude Sonnet 4.5
-# (us.anthropic.claude-sonnet-4-5-20250929-v1:0)
+# Enable Bedrock model access in the console (Bedrock → Model access):
+# - Claude Sonnet 4.5  (us.anthropic.claude-sonnet-4-5-20250929-v1:0)  — infra-agent, orchestrator
+# - Claude Sonnet 4.6  (us.anthropic.claude-sonnet-4-6-20251001-v1:0)  — PNG vision pipeline
 ```
 
 ---
@@ -124,6 +132,14 @@ Reads agent-id and alias-id from SSM, deploys the orchestrator stack, then regis
 
 ```bash
 make deploy-orchestrator
+```
+
+#### 6. Deploy the diagram pipeline
+
+Deploys the DiagramPipelineStack: diagrams S3 bucket, diagram_parser Lambda, png_pipeline Lambda, and upload_router Lambda. Must run after InfraAgentStack and OrchestratorStack — it references the IAC agent role and orchestrator agent IDs.
+
+```bash
+make deploy-diagram-pipeline
 ```
 
 ### Get agent IDs after deployment
@@ -264,13 +280,59 @@ Key log groups:
 | Log group | Source |
 |---|---|
 | `/aws/bedrock/agents/multi-agent-system-orchestrator` | Orchestrator agent |
-| `/aws/lambda/infra-agent-code-generator` | IaC generation |
+| `/aws/lambda/infra-agent-code-generator` | IaC generation (text path) |
 | `/aws/lambda/infra-agent-validator` | Terraform + tflint |
 | `/aws/lambda/infra-agent-security-scanner` | Checkov |
 | `/aws/lambda/infra-agent-artifact-uploader` | S3 upload |
 | `/aws/lambda/multi-agent-system-doc-generator` | Documentation generation |
+| `/aws/lambda/{project_name}-upload-router` | Diagram upload entry point |
+| `/aws/lambda/{project_name}-diagram-parser` | XML diagram parser |
+| `/aws/lambda/{project_name}-png-pipeline` | PNG/JPG vision pipeline |
 
 Key structured log fields: `message`, `iac_type`, `artifact_type`, `regenerating`, `status`, `error_count`, `finding_count`, `s3_uri`, `doc_s3_uri`, `request_id`.
+
+---
+
+### Diagram Upload Returns 422
+
+**Symptom:** The upload_router Lambda returns HTTP 422 with an error message about parsing.
+
+**Cause 1:** The XML parser could not identify any AWS service shapes in the diagram. Shapes must map to known Terraform resource types via the `SHAPE_TO_TERRAFORM` dict in `diagram_parser/handler.py`.
+
+**Diagnosis:** Check the diagram_parser log group for the list of unrecognized shape types, then add mappings to the handler.
+
+**Cause 2:** The PNG pipeline returned an IR with an empty `services` array. This can happen if the image is too low-resolution for Rekognition or Bedrock Vision to identify services.
+
+**Diagnosis:** Check the png_pipeline log group. If Rekognition confidence scores are all below threshold, lower the SSM parameter:
+```bash
+aws ssm put-parameter \
+  --name "/multi-agent-system/diagram-pipeline/rekognition-confidence-threshold" \
+  --value "50" --overwrite
+```
+
+---
+
+### ProcessDiagram Returns `gaps_found`
+
+**Symptom:** The infra-agent returns `status: "gaps_found"` with a list of parameters it cannot infer.
+
+**Cause:** The diagram is missing required parameters (e.g., AMI ID for an EC2 instance) that have no safe default. The gap_resolver explicitly refuses to default security-sensitive values like passwords and AMI IDs.
+
+**Fix:** Resubmit the orchestrator request with the missing values supplied in the `user_gaps` field of the ProcessDiagram action group call. The agent instruction set guides this flow.
+
+---
+
+### Updating the Rekognition Confidence Threshold
+
+The minimum confidence for Rekognition labels is controlled by an SSM parameter (default: 70). Lowering it may help with low-contrast diagrams; raising it reduces false-positive service detection.
+
+```bash
+aws ssm put-parameter \
+  --name "/multi-agent-system/diagram-pipeline/rekognition-confidence-threshold" \
+  --value "60" --overwrite
+```
+
+No Lambda redeployment required — the png_pipeline Lambda reads this parameter at invocation time.
 
 ---
 
@@ -312,17 +374,46 @@ make deploy-infra
 make promote-infra
 ```
 
+### Updating the diagram pipeline Lambdas
+
+The diagram_parser, png_pipeline, and upload_router Lambdas are deployed by DiagramPipelineStack:
+
+```bash
+make deploy-diagram-pipeline
+```
+
+### Adding a new diagram shape mapping
+
+Edit `SHAPE_TO_TERRAFORM` in `agents/infra-agent/lambda_functions/diagram_parser/handler.py`, then redeploy:
+
+```bash
+make deploy-diagram-pipeline
+```
+
+### Adding a new required parameter or default
+
+Edit `RESOURCE_REQUIRED_PARAMS` or `PARAM_DEFAULTS` in `agents/infra-agent/lambda_functions/iac_agent/gap_resolver.py`, then redeploy:
+
+```bash
+make deploy-infra
+make promote-infra
+```
+
 ### Updating the Bedrock model
 
-Change `BEDROCK_MODEL_ID` in both `cdk/stacks/infra_agent_stack.py` and `cdk/stacks/orchestrator_stack.py`. `BEDROCK_BASE_MODEL_ID` is derived automatically by stripping the cross-region prefix.
+Change `BEDROCK_MODEL_ID` in `cdk/stacks/infra_agent_stack.py` and `cdk/stacks/orchestrator_stack.py`. The PNG vision pipeline model is set separately via `BEDROCK_MODEL_ID` in `cdk/stacks/diagram_pipeline_stack.py` (and mirrored to the SSM parameter). `BEDROCK_BASE_MODEL_ID` is derived automatically by stripping the cross-region prefix.
 
 ---
 
 ## Security Notes
 
 - S3 output bucket: SSE-S3 encryption, public access blocked, versioning enabled.
+- S3 diagrams bucket: SSE-S3 encryption, public access blocked, versioning enabled, 30-day lifecycle rule (raw uploads expire after 30 days; old versions deleted after 7 days).
+- Diagram pipeline Lambda IAM roles are scoped by prefix: diagram_parser writes only to `diagrams/*`; png_pipeline reads and writes `diagrams/*`; upload_router may only invoke the two parser Lambdas and the orchestrator agent.
+- Rekognition `DetectLabels` permission is granted on `*` (Rekognition does not support resource-level ARN scoping for this API).
 - Bedrock agent roles are scoped to specific inference profile and foundation model ARNs across the three US cross-region routing regions.
 - GenerateDocs Lambda IAM is scoped: `s3:GetObject` on `generated/*` prefix only, `s3:PutObject` on `docs/*` prefix only.
 - GitHub Actions uses OIDC — no long-lived AWS credentials stored as secrets.
 - CI deploy role trust policy is scoped to pushes from the `main` branch only.
 - Bedrock guardrails block off-topic requests, prompt injection, profanity, PII (AWS keys, passwords), and harmful content on both the infra-agent and orchestrator.
+- The gap_resolver explicitly refuses to default passwords, access keys, and other secrets — these always surface as unresolvable gaps requiring user input.
