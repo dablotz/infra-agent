@@ -6,6 +6,7 @@ import aws_cdk as cdk
 from stacks.shared_stack import SharedStack
 from stacks.infra_agent_stack import InfraAgentStack
 from stacks.orchestrator_stack import OrchestratorStack
+from stacks.diagram_pipeline_stack import DiagramPipelineStack
 
 app = cdk.App()
 
@@ -22,6 +23,13 @@ create_oidc_provider = app.node.try_get_context("create_github_oidc_provider") !
 infra_agent_id = app.node.try_get_context("infra_agent_id") or ""
 infra_agent_alias_id = app.node.try_get_context("infra_agent_alias_id") or ""
 
+# orchestrator_agent_id and orchestrator_alias_id are required when deploying
+# DiagramPipelineStack. Pass them via -c flags after OrchestratorStack deploys:
+#   cdk deploy DiagramPipelineStack \
+#       -c orchestrator_agent_id=... -c orchestrator_alias_id=...
+orchestrator_agent_id = app.node.try_get_context("orchestrator_agent_id") or ""
+orchestrator_alias_id = app.node.try_get_context("orchestrator_alias_id") or ""
+
 SharedStack(
     app,
     "SharedStack",
@@ -31,7 +39,7 @@ SharedStack(
     env=env,
 )
 
-InfraAgentStack(
+infra_agent_stack = InfraAgentStack(
     app,
     "InfraAgentStack",
     project_name=project_name,
@@ -44,6 +52,16 @@ OrchestratorStack(
     project_name=project_name,
     infra_agent_id=infra_agent_id,
     infra_agent_alias_id=infra_agent_alias_id,
+    env=env,
+)
+
+DiagramPipelineStack(
+    app,
+    "DiagramPipelineStack",
+    project_name=project_name,
+    orchestrator_agent_id=orchestrator_agent_id,
+    orchestrator_alias_id=orchestrator_alias_id,
+    iac_agent_role=infra_agent_stack.iac_agent_role,
     env=env,
 )
 

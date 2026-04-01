@@ -26,6 +26,10 @@
                   "artifact_type": {
                     "type": "string",
                     "description": "Type of code artifact — pass whatever the upstream sub-agent reported (e.g. terraform, cloudformation, cdk, go, rust). If omitted, the type is read from the artifact's S3 metadata."
+                  },
+                  "manifest_s3_path": {
+                    "type": "string",
+                    "description": "S3 URI of the configuration manifest produced by the diagram pipeline (e.g. s3://bucket/diagrams/name/manifest_final.json). When provided for an IaC artifact, a manifest-aware runbook is generated that includes a Configuration Decisions table and an Assumptions checklist. Omit for text-only requests."
                   }
                 }
               }

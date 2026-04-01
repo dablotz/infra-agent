@@ -1,0 +1,127 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Process Diagram API",
+    "version": "1.0.0",
+    "description": "Run the full diagram-to-Terraform pipeline from a pre-parsed IR and manifest stored in S3"
+  },
+  "paths": {
+    "/process-diagram": {
+      "post": {
+        "summary": "Generate Terraform from a diagram IR",
+        "description": "Loads the diagram Intermediate Representation (IR) and configuration manifest from S3, resolves any parameter gaps, generates Terraform HCL, and writes the output back to S3. Returns hcl_s3_key, manifest_s3_key, and s3_bucket on success, or a gaps list when required parameters cannot be inferred automatically.",
+        "operationId": "processDiagram",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["ir_s3_bucket", "ir_s3_key", "manifest_s3_key"],
+                "properties": {
+                  "ir_s3_bucket": {
+                    "type": "string",
+                    "description": "S3 bucket containing both the IR JSON and the configuration manifest"
+                  },
+                  "ir_s3_key": {
+                    "type": "string",
+                    "description": "S3 key of the diagram IR JSON (e.g. diagrams/my_arch/ir.json)"
+                  },
+                  "manifest_s3_key": {
+                    "type": "string",
+                    "description": "S3 key of the initial configuration manifest (e.g. diagrams/my_arch/manifest.json)"
+                  },
+                  "user_gaps": {
+                    "type": "string",
+                    "description": "JSON array of gap objects previously returned by this action and now resolved by the user. Each object must have 'parameter' and 'value' keys. Omit on the first call."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pipeline complete or gaps found requiring user input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "description": "Gaps found — one or more required parameters could not be inferred",
+                      "required": ["status", "gaps"],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": ["gaps_found"]
+                        },
+                        "gaps": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "service_id": { "type": "string" },
+                              "resource_type": { "type": "string" },
+                              "parameter": { "type": "string" },
+                              "reason": { "type": "string" }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "Pipeline succeeded — Terraform HCL and final manifest written to S3",
+                      "required": ["status", "hcl_s3_key", "manifest_s3_key", "s3_bucket"],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": ["success"]
+                        },
+                        "hcl_s3_key": {
+                          "type": "string",
+                          "description": "S3 key of the generated Terraform HCL file"
+                        },
+                        "manifest_s3_key": {
+                          "type": "string",
+                          "description": "S3 key of the enriched final manifest (manifest_final.json)"
+                        },
+                        "s3_bucket": {
+                          "type": "string",
+                          "description": "S3 bucket where both artifacts were written"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — missing required fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error — S3 read/write or Bedrock invocation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "error": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

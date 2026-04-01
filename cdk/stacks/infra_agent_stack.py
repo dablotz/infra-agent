@@ -428,6 +428,65 @@ class InfraAgentStack(Stack):
         with open(os.path.join(bedrock_dir, "upload_iac_schema.json")) as f:
             upload_schema = f.read()
 
+        with open(os.path.join(bedrock_dir, "process_diagram_schema.json")) as f:
+            process_diagram_schema = f.read()
+
+        # ── IAM + Lambda: iac_agent (diagram-to-Terraform pipeline) ─────────
+        log_group_iac_agent = logs.LogGroup(
+            self,
+            "LogGroupIacAgent",
+            log_group_name=f"/aws/lambda/{AGENT_NAME}-iac-agent",
+            retention=log_retention,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+
+        # The iac_agent role intentionally starts with no S3 access: the
+        # diagrams bucket is created by DiagramPipelineStack, which calls
+        # diagrams_bucket.grant_read_write(iac_agent_role) after this stack
+        # deploys. Bedrock InvokeModel access mirrors the code generator role.
+        iac_agent_role = iam.Role(
+            self,
+            "LambdaIacAgentRole",
+            role_name=f"{AGENT_NAME}-lambda-iac-agent-role",
+            assumed_by=lambda_trust,
+        )
+        iac_agent_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=[
+                    f"arn:aws:bedrock:{region}:{account}:inference-profile/{BEDROCK_MODEL_ID}",
+                    f"arn:aws:bedrock:us-east-1::foundation-model/{BEDROCK_BASE_MODEL_ID}",
+                    f"arn:aws:bedrock:us-west-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
+                    f"arn:aws:bedrock:us-east-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
+                ],
+            )
+        )
+        iac_agent_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[f"{log_group_iac_agent.log_group_arn}:*"],
+            )
+        )
+
+        iac_agent_fn = lambda_.Function(
+            self,
+            "IacAgentFn",
+            function_name=f"{AGENT_NAME}-iac-agent",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.lambda_handler",
+            code=lambda_.Code.from_asset(
+                os.path.join(lambda_dir, "iac_agent")
+            ),
+            role=iac_agent_role,
+            timeout=cdk.Duration.seconds(300),
+            memory_size=512,
+            environment={"BEDROCK_MODEL_ID": BEDROCK_MODEL_ID},
+            log_group=log_group_iac_agent,
+        )
+
+        # Expose role so DiagramPipelineStack can grant S3 bucket access
+        self.iac_agent_role: iam.IRole = iac_agent_role
+
         cfn_agent = bedrock.CfnAgent(
             self,
             "IacAgent",
@@ -441,6 +500,15 @@ class InfraAgentStack(Stack):
                 guardrail_version=guardrail_version.attr_version,
             ),
             action_groups=[
+                bedrock.CfnAgent.AgentActionGroupProperty(
+                    action_group_name="ProcessDiagram",
+                    action_group_executor=bedrock.CfnAgent.ActionGroupExecutorProperty(
+                        lambda_=iac_agent_fn.function_arn
+                    ),
+                    api_schema=bedrock.CfnAgent.APISchemaProperty(
+                        payload=process_diagram_schema
+                    ),
+                ),
                 bedrock.CfnAgent.AgentActionGroupProperty(
                     action_group_name="GenerateIaC",
                     action_group_executor=bedrock.CfnAgent.ActionGroupExecutorProperty(
@@ -482,6 +550,7 @@ class InfraAgentStack(Stack):
 
         # Allow Bedrock to invoke each Lambda action group executor
         for fn, sid in [
+            (iac_agent_fn, "BedrockInvokeIacAgent"),
             (code_generator, "BedrockInvokeGenerator"),
             (validator, "BedrockInvokeValidator"),
             (security_scanner, "BedrockInvokeScanner"),
