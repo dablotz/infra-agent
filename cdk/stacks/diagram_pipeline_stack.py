@@ -12,7 +12,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from cdk.constants import BEDROCK_MODEL_ID
+from constants import BEDROCK_MODEL_ID
 
 
 class DiagramPipelineStack(Stack):

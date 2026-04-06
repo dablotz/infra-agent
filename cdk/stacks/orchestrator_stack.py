@@ -11,7 +11,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from cdk.constants import BEDROCK_MODEL_ID, BEDROCK_BASE_MODEL_ID
+from constants import BEDROCK_MODEL_ID, BEDROCK_BASE_MODEL_ID
 
 # Infra-agent output bucket name follows this pattern (defined in InfraAgentStack).
 # Referenced here without importing the stack to keep stacks decoupled.

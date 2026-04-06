@@ -13,7 +13,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from cdk.constants import BEDROCK_MODEL_ID, BEDROCK_BASE_MODEL_ID
+from constants import BEDROCK_MODEL_ID, BEDROCK_BASE_MODEL_ID
 
 # Resource name prefix for all infra-agent resources — matches existing naming.
 AGENT_NAME = "infra-agent"
