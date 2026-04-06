@@ -149,7 +149,7 @@ def test_returns_bedrock_envelope(lambda_context):
 
 def test_missing_ir_s3_bucket_returns_400(lambda_context):
     event = _make_event(ir_bucket="")
-    result = lambda_handler(event, lambda_context, s3_client=MagicMock())
+    result = lambda_handler(event, lambda_context, s3_client=MagicMock(), bedrock_client=MagicMock())
 
     assert result["response"]["httpStatusCode"] == 400
     assert "ir_s3_bucket" in _body(result)["error"]
@@ -157,14 +157,14 @@ def test_missing_ir_s3_bucket_returns_400(lambda_context):
 
 def test_missing_ir_s3_key_returns_400(lambda_context):
     event = _make_event(ir_key="")
-    result = lambda_handler(event, lambda_context, s3_client=MagicMock())
+    result = lambda_handler(event, lambda_context, s3_client=MagicMock(), bedrock_client=MagicMock())
 
     assert result["response"]["httpStatusCode"] == 400
 
 
 def test_missing_manifest_s3_key_returns_400(lambda_context):
     event = _make_event(manifest_key="")
-    result = lambda_handler(event, lambda_context, s3_client=MagicMock())
+    result = lambda_handler(event, lambda_context, s3_client=MagicMock(), bedrock_client=MagicMock())
 
     assert result["response"]["httpStatusCode"] == 400
 
