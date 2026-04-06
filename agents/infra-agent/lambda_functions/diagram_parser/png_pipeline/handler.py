@@ -12,6 +12,7 @@ processing is path-agnostic.
 
 import json
 import logging
+import os
 import urllib.parse
 from pathlib import PurePosixPath
 
@@ -19,6 +20,7 @@ import boto3
 
 from .rekognition_step import detect_services
 from .bedrock_vision_step import analyze_diagram
+from utils import slugify
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -30,16 +32,6 @@ logger.setLevel(logging.INFO)
 _MIN_GROUNDING_INSTANCES = 1
 
 
-# ---------------------------------------------------------------------------
-# Shared helpers (kept here to avoid cross-Lambda import dependencies)
-# These are functionally identical to the helpers in the XML parser handler.
-# ---------------------------------------------------------------------------
-
-
-def _slugify(label: str) -> str:
-    """Convert a human label to a Terraform-safe identifier."""
-    return label.lower().replace(" ", "_").replace("-", "_").replace(".", "_")
-
 
 def _build_manifest(services: list[dict], ir_source: str) -> dict:
     """
@@ -50,7 +42,7 @@ def _build_manifest(services: list[dict], ir_source: str) -> dict:
     """
     parameters: list[dict] = []
     for svc in services:
-        resource_addr = f"{svc['type']}.{_slugify(svc['label'])}"
+        resource_addr = f"{svc['type']}.{slugify(svc['label'])}"
         parameters.append({
             "parameter": f"{resource_addr}.diagram_id",
             "value": svc["id"],
@@ -120,9 +112,10 @@ def lambda_handler(
             s3_key=key,
             rekognition_client=rekognition_client,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.warning(
-            "Rekognition step failed (%s); proceeding with Bedrock Vision alone.", exc
+            "Rekognition step failed; proceeding with Bedrock Vision alone.",
+            exc_info=True,
         )
         rekognition_results = []
 
@@ -145,6 +138,7 @@ def lambda_handler(
             s3_bucket=bucket,
             s3_key=key,
             rekognition_context=grounding_context,
+            model_id=os.environ.get("BEDROCK_MODEL_ID", ""),
             bedrock_client=bedrock_client,
             s3_client=s3_client,
         )

@@ -1,5 +1,4 @@
 import os
-import re
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -12,8 +11,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-BEDROCK_BASE_MODEL_ID = re.sub(r"^[a-z]{2}\.", "", BEDROCK_MODEL_ID)
+from cdk.constants import BEDROCK_MODEL_ID, BEDROCK_BASE_MODEL_ID
 
 # Infra-agent output bucket name follows this pattern (defined in InfraAgentStack).
 # Referenced here without importing the stack to keep stacks decoupled.

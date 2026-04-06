@@ -13,6 +13,8 @@ Rules enforced in the generated prompt:
 
 import json
 
+from utils import slugify
+
 
 def _build_param_block(resource_type: str, service_slug: str, parameters: list[dict]) -> str:
     """Return a formatted block of resolved parameters for a single resource.
@@ -77,8 +79,7 @@ def build_prompt(ir: dict, manifest: dict) -> str:
         if resource_type == "unknown":
             continue
         label = service.get("label", "")
-        slug = (label.replace(" ", "_").replace("-", "_").lower()
-                if label else service["id"].replace("-", "_").lower())
+        slug = slugify(label, fallback=service["id"])
         param_block = _build_param_block(resource_type, slug, parameters)
         block = f"Resource: {resource_type} (name: {slug})"
         if param_block:

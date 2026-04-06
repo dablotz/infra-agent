@@ -4,11 +4,22 @@ Shared pytest fixtures and utilities for the infra-agent Lambda test suite.
 
 import importlib.util
 import pathlib
+import sys
 from unittest.mock import MagicMock
 
 import pytest
 
 LAMBDA_BASE = pathlib.Path(__file__).parent.parent / "lambda_functions"
+
+# Add each Lambda package directory to sys.path so that package-local imports
+# (e.g. `from utils import slugify`) resolve the same way they do at Lambda
+# runtime, where the function's directory is the working directory.
+_LAMBDA_PACKAGES = ["diagram_parser", "iac_agent", "artifact_uploader",
+                    "code_generator", "validator", "security_scanner"]
+for _pkg in _LAMBDA_PACKAGES:
+    _pkg_dir = str(LAMBDA_BASE / _pkg)
+    if _pkg_dir not in sys.path:
+        sys.path.insert(0, _pkg_dir)
 
 
 def load_handler(lambda_name: str):

@@ -1,6 +1,5 @@
 import json
 import os
-import re
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -14,14 +13,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-# Bedrock cross-region inference profile for Claude Sonnet
-BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-
-# Strip the cross-region prefix (e.g. "us.") to get the base foundation model
-# ID used in regional ARNs.
-# e.g. "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-#    → "anthropic.claude-sonnet-4-5-20250929-v1:0"
-BEDROCK_BASE_MODEL_ID = re.sub(r"^[a-z]{2}\.", "", BEDROCK_MODEL_ID)
+from cdk.constants import BEDROCK_MODEL_ID, BEDROCK_BASE_MODEL_ID
 
 # Resource name prefix for all infra-agent resources — matches existing naming.
 AGENT_NAME = "infra-agent"

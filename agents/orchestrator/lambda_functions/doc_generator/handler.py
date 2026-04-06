@@ -131,7 +131,9 @@ def lambda_handler(event, context, s3_client=None, bedrock_client=None):
     key_parts = artifact_key.split("/")
     request_id = key_parts[1] if len(key_parts) >= 3 else str(uuid.uuid4())
 
-    output_bucket = os.environ["OUTPUT_BUCKET"]
+    output_bucket = os.environ.get("OUTPUT_BUCKET")
+    if not output_bucket:
+        return _response(event, 500, {"error": "OUTPUT_BUCKET environment variable is not set"})
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     doc_key = f"docs/{request_id}/{timestamp}.md"
 

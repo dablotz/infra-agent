@@ -11,10 +11,12 @@ Outputs:  diagrams/{stem}/ir.json
 import json
 import logging
 import urllib.parse
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from pathlib import PurePosixPath
 
 import boto3
+
+from utils import slugify
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -291,10 +293,6 @@ def _extract_network(services: list[dict]) -> dict:
     return network
 
 
-def _slugify(label: str) -> str:
-    """Convert a human label to a Terraform-safe identifier."""
-    return label.lower().replace(" ", "_").replace("-", "_").replace(".", "_")
-
 
 def _build_ir(services: list[dict], relationships: list[dict], source_file: str) -> dict:
     return {
@@ -314,7 +312,7 @@ def _build_manifest(services: list[dict], ir_source: str) -> dict:
     """
     parameters: list[dict] = []
     for svc in services:
-        resource_addr = f"{svc['type']}.{_slugify(svc['label'])}"
+        resource_addr = f"{svc['type']}.{slugify(svc['label'])}"
         # Diagram node id allows agents to cross-reference back to the IR
         parameters.append({
             "parameter": f"{resource_addr}.diagram_id",

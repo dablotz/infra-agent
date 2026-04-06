@@ -12,8 +12,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-# Keep in sync with infra_agent_stack.py
-BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-6-20251001-v1:0"
+from cdk.constants import BEDROCK_MODEL_ID
 
 
 class DiagramPipelineStack(Stack):
@@ -153,7 +152,15 @@ class DiagramPipelineStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(
-                os.path.join(infra_lambda_dir, "diagram_parser")
+                os.path.join(infra_lambda_dir, "diagram_parser"),
+                bundling=cdk.BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                    command=[
+                        "bash", "-c",
+                        "pip install -r requirements.txt -t /asset-output --quiet"
+                        " && cp -r . /asset-output",
+                    ],
+                ),
             ),
             role=parser_role,
             timeout=cdk.Duration.seconds(60),

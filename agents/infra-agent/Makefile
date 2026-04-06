@@ -42,7 +42,7 @@ build-security-layer:
 
 test:
 	@echo "Running unit tests..."
-	@python -m pytest tests -v
+	@python -m pytest tests -v --cov=lambda_functions --cov-report=term-missing
 
 clean:
 	@echo "Nothing to clean (Lambda packaging is handled by CDK)"

@@ -36,7 +36,7 @@ _parse_drawio = _mod._parse_drawio
 _parse_lucidchart = _mod._parse_lucidchart
 _extract_network = _mod._extract_network
 _build_manifest = _mod._build_manifest
-_slugify = _mod._slugify
+_slugify = _mod.slugify
 
 
 # ---------------------------------------------------------------------------

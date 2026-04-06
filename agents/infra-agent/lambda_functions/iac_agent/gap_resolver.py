@@ -12,6 +12,8 @@ modified or removed — only new entries are appended.
 import json
 import logging
 
+from utils import slugify
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -271,10 +273,7 @@ GAP_REASONS: dict[str, str] = {
 
 def _service_slug(service: dict) -> str:
     """Return the manifest-compatible slug for a service (matches diagram parser convention)."""
-    label = service.get("label", "")
-    if label:
-        return label.replace(" ", "_").replace("-", "_").lower()
-    return service["id"].replace("-", "_").lower()
+    return slugify(service.get("label", ""), fallback=service["id"])
 
 
 def _manifest_lookup(parameters: list[dict], param_key: str) -> str | None:

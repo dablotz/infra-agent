@@ -50,7 +50,9 @@ def lambda_handler(event, context, s3_client=None):
     if not generated_code:
         return _response(event, 400, {"error": "generated_code is required"})
 
-    bucket = os.environ["OUTPUT_BUCKET"]
+    bucket = os.environ.get("OUTPUT_BUCKET")
+    if not bucket:
+        return _response(event, 500, {"error": "OUTPUT_BUCKET environment variable is not set"})
     request_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     file_ext = ".tf" if iac_type == "terraform" else ".yaml"

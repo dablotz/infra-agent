@@ -49,6 +49,8 @@ def lambda_handler(event, context, bedrock_client=None):
         return _response(event, 400, {"error": "user_request is required"})
 
     model_id = os.environ.get("BEDROCK_MODEL_ID", "")
+    if not model_id:
+        return _response(event, 500, {"error": "BEDROCK_MODEL_ID environment variable is not set"})
     prompt = _build_prompt(iac_type, user_request, validation_errors, previous_code)
 
     logger.info(json.dumps({

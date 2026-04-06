@@ -19,7 +19,7 @@ import boto3
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-DEFAULT_MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6-20251001-v1:0"
 
 # ---------------------------------------------------------------------------
 # Terraform resource types the model may assign (keeps the prompt concise)
