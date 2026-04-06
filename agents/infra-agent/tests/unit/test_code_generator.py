@@ -304,3 +304,29 @@ def test_build_prompt_user_request_always_present():
 
     assert user_request in prompt_gen
     assert user_request in prompt_regen
+
+
+# ---------------------------------------------------------------------------
+# Environment variable guard
+# ---------------------------------------------------------------------------
+
+
+def test_missing_bedrock_model_id_returns_500(lambda_context, monkeypatch):
+    monkeypatch.delenv("BEDROCK_MODEL_ID")
+    result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=MagicMock())
+
+    assert result["response"]["httpStatusCode"] == 500
+    assert "BEDROCK_MODEL_ID" in _body(result)["error"]
+
+
+# ---------------------------------------------------------------------------
+# Nova model response parsing
+# ---------------------------------------------------------------------------
+
+
+def test_nova_model_response_parsed_correctly(lambda_context, monkeypatch):
+    monkeypatch.setenv("BEDROCK_MODEL_ID", NOVA_MODEL_ID)
+    result = lambda_handler(BASE_EVENT, lambda_context, bedrock_client=_nova_mock(SAMPLE_TF_CODE))
+
+    assert result["response"]["httpStatusCode"] == 200
+    assert _body(result)["generated_code"] == SAMPLE_TF_CODE

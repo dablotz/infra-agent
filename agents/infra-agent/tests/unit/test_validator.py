@@ -280,3 +280,49 @@ def test_tflint_binary_missing_raises_runtime_error(mock_run, lambda_context):
     ]
     with pytest.raises(RuntimeError, match="infrastructure failure"):
         lambda_handler(BASE_EVENT, lambda_context)
+
+
+@patch("subprocess.run")
+def test_terraform_validate_binary_missing_raises_runtime_error(mock_run, lambda_context):
+    mock_run.side_effect = [
+        _OK,  # terraform init
+        FileNotFoundError("No such file: /opt/bin/terraform"),  # terraform validate
+    ]
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        lambda_handler(BASE_EVENT, lambda_context)
+
+
+@patch("subprocess.run")
+def test_terraform_validate_timeout_raises_runtime_error(mock_run, lambda_context):
+    mock_run.side_effect = [
+        _OK,  # terraform init
+        subprocess.TimeoutExpired(cmd="/opt/bin/terraform", timeout=60),  # terraform validate
+    ]
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        lambda_handler(BASE_EVENT, lambda_context)
+
+
+@patch("subprocess.run")
+def test_tflint_init_timeout_raises_runtime_error(mock_run, lambda_context):
+    mock_run.side_effect = [
+        _OK,  # terraform init
+        _OK,  # terraform validate
+        subprocess.TimeoutExpired(cmd="/opt/bin/tflint", timeout=60),  # tflint --init
+    ]
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        lambda_handler(BASE_EVENT, lambda_context)
+
+
+@patch("subprocess.run")
+def test_tflint_init_failure_adds_error_but_does_not_raise(mock_run, lambda_context):
+    """tflint --init CalledProcessError adds to errors and marks status failed."""
+    mock_run.side_effect = [
+        _OK,  # terraform init
+        _OK,  # terraform validate
+        subprocess.CalledProcessError(1, "tflint", stderr=b"plugin install error"),  # tflint --init
+    ]
+    result = lambda_handler(BASE_EVENT, lambda_context)
+    body = _body(result)
+
+    assert body["validation_status"] == "failed"
+    assert "tflint failed" in body["validation_errors"]
