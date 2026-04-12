@@ -21,10 +21,10 @@ build-terraform-layer:
 	@mkdir -p ../../shared/lambda_layers/terraform_tools/bin
 	@cd ../../shared/lambda_layers/terraform_tools/bin && \
 		wget -q https://releases.hashicorp.com/terraform/$(TERRAFORM_VERSION)/terraform_$(TERRAFORM_VERSION)_linux_amd64.zip && \
-		unzip -q terraform_$(TERRAFORM_VERSION)_linux_amd64.zip && \
+		unzip -qo terraform_$(TERRAFORM_VERSION)_linux_amd64.zip && \
 		rm terraform_$(TERRAFORM_VERSION)_linux_amd64.zip && \
 		wget -q https://github.com/terraform-linters/tflint/releases/download/v$(TFLINT_VERSION)/tflint_linux_amd64.zip && \
-		unzip -q tflint_linux_amd64.zip && \
+		unzip -qo tflint_linux_amd64.zip && \
 		rm tflint_linux_amd64.zip
 	@cd ../../shared/lambda_layers/terraform_tools && zip -qr ../terraform_tools.zip .
 

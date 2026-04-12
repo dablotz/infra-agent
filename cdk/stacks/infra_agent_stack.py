@@ -10,6 +10,7 @@ from aws_cdk import (
     aws_logs as logs,
     aws_s3 as s3,
     aws_ssm as ssm,
+    custom_resources as cr,
 )
 from constructs import Construct
 
@@ -570,6 +571,97 @@ class InfraAgentStack(Stack):
         # The production alias is NOT managed by CDK. It is created/updated by
         # scripts/promote_agent.py only after integration tests pass, ensuring
         # production always points to a tested version.
+
+        # ── Custom resource: clean up unmanaged aliases before agent deletion ─
+        # Bedrock refuses to delete an agent while any alias exists (HTTP 409).
+        # CFN only knows about StagingAlias; the production alias is invisible to
+        # it. This custom resource runs on Delete (before CFN deletes the agent)
+        # and removes any aliases CFN does not own, unblocking the teardown.
+        alias_cleanup_log_group = logs.LogGroup(
+            self,
+            "AliasCleanupLogGroup",
+            log_group_name=f"/aws/lambda/{AGENT_NAME}-alias-cleanup",
+            retention=log_retention,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+
+        alias_cleanup_role = iam.Role(
+            self,
+            "AliasCleanupRole",
+            role_name=f"{AGENT_NAME}-alias-cleanup-role",
+            assumed_by=lambda_trust,
+        )
+        alias_cleanup_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:ListAgentAliases", "bedrock:DeleteAgentAlias"],
+                resources=[
+                    f"arn:aws:bedrock:{region}:{account}:agent/{cfn_agent.attr_agent_id}",
+                    f"arn:aws:bedrock:{region}:{account}:agent-alias/{cfn_agent.attr_agent_id}/*",
+                ],
+            )
+        )
+        alias_cleanup_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[f"{alias_cleanup_log_group.log_group_arn}:*"],
+            )
+        )
+
+        _cleanup_code = "\n".join([
+            "import boto3",
+            "def handler(event, context):",
+            "    rid = event.get('PhysicalResourceId', 'alias-cleanup')",
+            "    if event['RequestType'] != 'Delete':",
+            "        return {'PhysicalResourceId': rid}",
+            "    props = event['ResourceProperties']",
+            "    agent_id = props['AgentId']",
+            "    managed = set(props.get('ManagedAliasIds', []))",
+            "    client = boto3.client('bedrock-agent')",
+            "    paginator = client.get_paginator('list_agent_aliases')",
+            "    for page in paginator.paginate(agentId=agent_id):",
+            "        for a in page['agentAliasSummaries']:",
+            "            if a['agentAliasId'] not in managed:",
+            "                try:",
+            "                    client.delete_agent_alias(",
+            "                        agentId=agent_id, agentAliasId=a['agentAliasId']",
+            "                    )",
+            "                except Exception:",
+            "                    pass",
+            "    return {'PhysicalResourceId': rid}",
+        ])
+
+        alias_cleanup_fn = lambda_.Function(
+            self,
+            "AliasCleanupFn",
+            function_name=f"{AGENT_NAME}-alias-cleanup",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="index.handler",
+            code=lambda_.Code.from_inline(_cleanup_code),
+            role=alias_cleanup_role,
+            timeout=cdk.Duration.seconds(60),
+            log_group=alias_cleanup_log_group,
+        )
+
+        alias_cleanup_provider = cr.Provider(
+            self,
+            "AliasCleanupProvider",
+            on_event_handler=alias_cleanup_fn,
+        )
+
+        alias_cleanup = cdk.CustomResource(
+            self,
+            "AliasCleanup",
+            service_token=alias_cleanup_provider.service_token,
+            properties={
+                "AgentId": cfn_agent.attr_agent_id,
+                # Tell the handler which alias IDs belong to this stack so it
+                # leaves them alone (CFN will delete them in the normal order).
+                "ManagedAliasIds": [staging_alias.attr_agent_alias_id],
+            },
+        )
+        # Deletion order: AliasCleanup → StagingAlias → IacAgent
+        # (reverse of creation order: IacAgent → StagingAlias → AliasCleanup)
+        alias_cleanup.node.add_dependency(staging_alias)
 
         # SSM parameters — read by OrchestratorStack and the deploy workflow.
         ssm.StringParameter(
