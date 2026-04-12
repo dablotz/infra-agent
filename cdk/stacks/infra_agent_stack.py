@@ -561,11 +561,15 @@ class InfraAgentStack(Stack):
         # against this alias. After tests pass, scripts/promote_agent.py reads
         # the version number from this alias and applies it to the production
         # alias — no boto3 create_agent_version call required.
+        # description includes the model ID so that any model change causes
+        # CloudFormation to update this resource, which triggers creation of a
+        # new agent version from DRAFT and re-routes the alias to it.
         staging_alias = bedrock.CfnAgentAlias(
             self,
             "StagingAlias",
             agent_id=cfn_agent.attr_agent_id,
             agent_alias_name="staging",
+            description=f"Staging alias — {BEDROCK_MODEL_ID}",
         )
 
         # The production alias is NOT managed by CDK. It is created/updated by
