@@ -125,7 +125,7 @@ class InfraAgentStack(Stack):
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],
                 resources=[
-                    f"arn:aws:bedrock:{region}::inference-profile/{BEDROCK_MODEL_ID}",
+                    f"arn:aws:bedrock:{region}:{account}:inference-profile/{BEDROCK_MODEL_ID}",
                     f"arn:aws:bedrock:us-east-1::foundation-model/{BEDROCK_BASE_MODEL_ID}",
                     f"arn:aws:bedrock:us-west-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
                     f"arn:aws:bedrock:us-east-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
@@ -381,7 +381,7 @@ class InfraAgentStack(Stack):
                     "bedrock:GetInferenceProfile",
                 ],
                 resources=[
-                    f"arn:aws:bedrock:{region}::inference-profile/{BEDROCK_MODEL_ID}",
+                    f"arn:aws:bedrock:{region}:{account}:inference-profile/{BEDROCK_MODEL_ID}",
                     f"arn:aws:bedrock:us-east-1::foundation-model/{BEDROCK_BASE_MODEL_ID}",
                     f"arn:aws:bedrock:us-west-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
                     f"arn:aws:bedrock:us-east-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
@@ -447,7 +447,7 @@ class InfraAgentStack(Stack):
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],
                 resources=[
-                    f"arn:aws:bedrock:{region}::inference-profile/{BEDROCK_MODEL_ID}",
+                    f"arn:aws:bedrock:{region}:{account}:inference-profile/{BEDROCK_MODEL_ID}",
                     f"arn:aws:bedrock:us-east-1::foundation-model/{BEDROCK_BASE_MODEL_ID}",
                     f"arn:aws:bedrock:us-west-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
                     f"arn:aws:bedrock:us-east-2::foundation-model/{BEDROCK_BASE_MODEL_ID}",
